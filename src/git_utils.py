@@ -109,6 +109,11 @@ class GitRepository:
         changes = []
         
         for diff_item in diff_index:
+            # DEBUG: Print what GitPython sees
+            print(f"DEBUG: File {diff_item.b_path or diff_item.a_path}")
+            print(f"  a_path={diff_item.a_path}, b_path={diff_item.b_path}")
+            print(f"  new_file={diff_item.new_file}, deleted_file={diff_item.deleted_file}")
+            
             # Determine file path and change type
             # Check a_path/b_path to correctly identify new vs deleted files
             if diff_item.a_path is None or diff_item.new_file:
@@ -125,6 +130,8 @@ class GitRepository:
             else:
                 file_path = diff_item.b_path
                 change_type = ChangeType.MODIFIED
+            
+            print(f"  -> Detected as: {change_type.value}\n")
             
             # Skip binary files
             if diff_item.diff and self._is_binary(diff_item.diff):
