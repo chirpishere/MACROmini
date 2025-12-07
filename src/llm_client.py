@@ -57,12 +57,23 @@ Your task:
    - STYLE: Formatting, naming conventions, documentation gaps
 
 3. For each issue, provide:
-   - Exact line number (if identifiable)
-   - Clear description of the problem
-   - Actionable suggestion for fixing it
-   - Relevant code snippet
+   - type: one of "security", "bug", "quality", "performance", "style"
+   - severity: one of "critical", "high", "medium", "low", "info"
+   - line_number: integer (if identifiable)
+   - description: clear description of the problem
+   - suggestion: actionable fix
+   - code_snippet: relevant code (optional)
 
-4. Provide an overall summary and quality score (0-10).
+4. IMPORTANT: You MUST provide:
+   - issues: array of issue objects (can be empty if no issues)
+   - summary: string describing overall code quality (1-2 sentences)
+   - has_critical_issues: boolean (true if any critical severity issues found)
+   - score: integer from 0 to 10 (NOT 0-100!)
+     - 10 = perfect code
+     - 8-9 = very good, minor issues only
+     - 6-7 = acceptable, some issues
+     - 4-5 = needs work, multiple issues
+     - 0-3 = serious problems, must fix
 
 Be thorough but focus on real issues that matter. Avoid nitpicks unless they're part of critical problems.
 """

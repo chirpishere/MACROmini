@@ -110,10 +110,13 @@ class GitRepository:
         
         for diff_item in diff_index:
             # Determine file path and change type
-            if diff_item.new_file:
+            # Check a_path/b_path to correctly identify new vs deleted files
+            if diff_item.a_path is None or diff_item.new_file:
+                # New file (only exists in new version)
                 file_path = diff_item.b_path
                 change_type = ChangeType.ADDED
-            elif diff_item.deleted_file:
+            elif diff_item.b_path is None or diff_item.deleted_file:
+                # Deleted file (only exists in old version)
                 file_path = diff_item.a_path
                 change_type = ChangeType.DELETED
             elif diff_item.renamed_file:
@@ -309,7 +312,7 @@ if __name__ == "__main__":
         print(f"   Clean: {repo.is_repo_clean()}\n")
         
         # Get staged changes
-        print("📋 Staged Changes:")
+        print("Staged Changes:")
         staged = repo.get_staged_changes()
         
         if not staged:
@@ -317,7 +320,7 @@ if __name__ == "__main__":
             print("   Try: git add <file>")
         else:
             for change in staged:
-                print(f"\n📄 {change.file_path} ({change.change_type.value})")
+                print(f"\n{change.file_path} ({change.change_type.value})")
                 print(f"   +{len(change.added_lines)} lines added")
                 print(f"   -{len(change.removed_lines)} lines removed")
                 
@@ -332,20 +335,20 @@ if __name__ == "__main__":
                         print(f"      {line}")
         
         # Get unstaged changes
-        print("\n\n📝 Unstaged Changes:")
+        print("\n\nUnstaged Changes:")
         unstaged = repo.get_unstaged_changes()
         
         if not unstaged:
             print("   No unstaged changes found.")
         else:
             for change in unstaged:
-                print(f"\n📄 {change.file_path} ({change.change_type.value})")
+                print(f"\n{change.file_path} ({change.change_type.value})")
                 print(f"   +{len(change.added_lines)} lines added")
                 print(f"   -{len(change.removed_lines)} lines removed")
         
         # Test context extraction
         if staged and staged[0].added_lines:
-            print("\n\n🔍 Testing Context Extraction:")
+            print("\n\nTesting Context Extraction:")
             first_change = staged[0]
             context = repo.get_file_content_with_context(
                 first_change.file_path,
@@ -356,9 +359,9 @@ if __name__ == "__main__":
             print(context)
         
     except ValueError as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         print("\nMake sure you're in a Git repository!")
         print("Try: git init")
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        print(f"Unexpected error: {e}")
 
