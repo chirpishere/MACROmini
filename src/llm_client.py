@@ -82,11 +82,18 @@ Be thorough but focus on real issues that matter. Avoid nitpicks unless they're 
 class OllamaCodeReviewer:
     """Client for reviewing code using Ollama LLM"""
     
+    # Constants
+    DEFAULT_MODEL = "qwen2.5-coder:7b"
+    DEFAULT_TEMPERATURE = 0.1
+    DEFAULT_BASE_URL = "http://localhost:11434"
+    MAX_RETRIES = 3
+    RETRY_DELAY = 1  # seconds
+    
     def __init__(
         self, 
-        model_name: str = "qwen2.5-coder:7b",
-        temperature: float = 0.1,
-        base_url: str = "http://localhost:11434"
+        model_name: str = DEFAULT_MODEL,
+        temperature: float = DEFAULT_TEMPERATURE,
+        base_url: str = DEFAULT_BASE_URL
     ):
         """
         Initialize the code reviewer
@@ -97,17 +104,19 @@ class OllamaCodeReviewer:
             base_url: Ollama server URL
         """
         self.model_name = model_name
+        self.base_url = base_url
+        
+        self._check_model_availability()
+        
         self.llm = ChatOllama(
             model=model_name,
             temperature=temperature,
             base_url=base_url,
-            format="json"  # Force JSON output
+            format="json"
         )
         
-        # Set up the output parser with our Pydantic model
         self.parser = JsonOutputParser(pydantic_object=ReviewResult)
         
-        # Create the prompt template
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT),
             ("human", "{format_instructions}\n\nFile: {file_path}\n\nCode to review:\n```\n{code}\n```")
@@ -116,7 +125,8 @@ class OllamaCodeReviewer:
     def review_code(
         self, 
         code: str, 
-        file_path: str = "unknown"
+        file_path: str = "unknown",
+        max_retries: int = 2
     ) -> ReviewResult:
         """
         Review code and return structured results
@@ -124,6 +134,7 @@ class OllamaCodeReviewer:
         Args:
             code: The code to review (can be diff or full file)
             file_path: Path to the file being reviewed (for context)
+            max_retries: Number of retry attempts for transient failures
             
         Returns:
             ReviewResult with all issues found, summary, and score
@@ -134,30 +145,106 @@ class OllamaCodeReviewer:
             >>> print(f"Found {len(result.issues)} issues")
             >>> print(f"Score: {result.score}/10")
         """
+        import time
+        
+        for attempt in range(max_retries):
+            try:
+                chain = self.prompt | self.llm | self.parser
+                
+                result = chain.invoke({
+                    "format_instructions": self.parser.get_format_instructions(),
+                    "file_path": file_path,
+                    "code": code
+                })
+                
+                review_result = self._parse_with_fallback(result)
+                if review_result:
+                    return review_result
+                
+                if attempt < max_retries - 1:
+                    print(f"Parsing failed, retrying ({attempt + 1}/{max_retries})...")
+                    time.sleep(1)
+                    
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    print(f"Error during review: {str(e)}")
+                    return self._create_fallback_result(str(e))
+                
+                # Otherwise, retry
+                print(f" Error: {str(e)}, retrying ({attempt + 1}/{max_retries})...")
+                time.sleep(1)
+        
+        return self._create_fallback_result("Max retries exceeded")
+    
+    def _parse_with_fallback(self, result: dict) -> Optional[ReviewResult]:
+        """
+        Try to parse result into ReviewResult, with fallback fixes
+        
+        Args:
+            result: Raw dictionary from LLM
+            
+        Returns:
+            ReviewResult or None if parsing fails
+        """
         try:
-            # Create the chain: prompt → LLM → JSON parser
-            chain = self.prompt | self.llm | self.parser
-            
-            # Invoke the chain with our inputs
-            result = chain.invoke({
-                "format_instructions": self.parser.get_format_instructions(),
-                "file_path": file_path,
-                "code": code
-            })
-            
-            # Convert dict to ReviewResult (with validation)
             return ReviewResult(**result)
-            
         except Exception as e:
-            # If anything fails (Ollama down, parsing error, etc.)
-            # Return a safe default instead of crashing
-            print(f"Error during review: {str(e)}")
-            return ReviewResult(
-                issues=[],
-                summary=f"Review failed: {str(e)}",
-                has_critical_issues=False,
-                score=5
-            )
+            fixed = self._fix_result_data(result)
+            if fixed:
+                try:
+                    return ReviewResult(**fixed)
+                except:
+                    pass
+            return None
+    
+    def _fix_result_data(self, data: dict) -> Optional[dict]:
+        """
+        Fix common LLM output issues
+        
+        Args:
+            data: Raw result dictionary
+            
+        Returns:
+            Fixed dictionary or None
+        """
+        try:
+            # Ensure required fields exist
+            data.setdefault("issues", [])
+            data.setdefault("summary", "Code reviewed")
+            
+            if "score" in data and data["score"] > 10:
+                data["score"] = min(10, data["score"] // 10)
+            data.setdefault("score", 5)
+            
+            if "has_critical_issues" not in data:
+                has_critical = any(
+                    issue.get("severity") == "critical"
+                    for issue in data.get("issues", [])
+                    if isinstance(issue, dict)
+                )
+                data["has_critical_issues"] = has_critical
+            
+            for issue in data.get("issues", []):
+                if not isinstance(issue, dict):
+                    continue
+                issue.setdefault("type", "quality")
+                issue.setdefault("severity", "info")
+                issue.setdefault("description", "Issue detected")
+                issue.setdefault("suggestion", "Review and fix")
+            
+            return data
+        except Exception as e:
+            print(f"Could not fix result data: {e}")
+            return None
+    
+    def _create_fallback_result(self, error_message: str) -> ReviewResult:
+        """Create safe fallback result for failures"""
+        return ReviewResult(
+            issues=[],
+            summary=f"Review failed: {error_message[:100]}",
+            has_critical_issues=False,
+            score=5
+        )
     
     def test_connection(self) -> bool:
         """
@@ -174,58 +261,31 @@ class OllamaCodeReviewer:
             print(f"Make sure Ollama is running: ollama serve")
             print(f"And the model is installed: ollama pull {self.model_name}")
             return False
+    
+    def _check_model_availability(self) -> None:
+        """Check if the specified model is available in Ollama"""
+        import requests
+        from rich.console import Console
         
+        console = Console()
+        
+        try:
+            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                available_models = [model["name"] for model in data.get("models", [])]
+                
+                if self.model_name not in available_models:
+                    console.print(f"[yellow]  Model '{self.model_name}' not found[/yellow]")
+                    console.print(f"[cyan]Available models:[/cyan]")
+                    for model in available_models:
+                        console.print(f"  - {model}")
+                    console.print(f"\n[cyan]To install the model, run:[/cyan]")
+                    console.print(f"  ollama pull {self.model_name}")
+                    raise ValueError(f"Model {self.model_name} not available")
+        except requests.exceptions.ConnectionError:
+            console.print("[red] Cannot connect to Ollama server[/red]")
+            console.print("[cyan]Make sure Ollama is running:[/cyan]")
+            console.print("  ollama serve")
+            raise ConnectionError("Ollama server not running")
 
-
-# Example usage and testing
-if __name__ == "__main__":
-    # Test code with obvious issues
-    test_code = """
-def login(username, password):
-    query = f"SELECT * FROM users WHERE username='{username}' AND password='{password}'"
-    result = db.execute(query)
-    return result
-
-def calculate_total(items):
-    total = 0
-    for item in items:
-        total += item['price'] * len(items)
-    return total
-"""
-    
-    print("Testing Ollama Code Reviewer\n")
-    
-    reviewer = OllamaCodeReviewer()
-    
-    # Test connection first
-    print("Testing connection to Ollama...")
-    if not reviewer.test_connection():
-        print("\nPlease start Ollama first:")
-        print("ollama serve")
-        exit(1)
-    
-    print("✅ Connected!\n")
-    
-    # Review the test code
-    print("Reviewing test code...\n")
-    result = reviewer.review_code(test_code, "test.py")
-    
-    # Display results
-    print(f"📊 Review Results for test.py")
-    print(f"{'='*50}")
-    print(f"Score: {result.score}/10")
-    print(f"Critical Issues: {'Yes' if result.has_critical_issues else 'No'}")
-    print(f"\n{result.summary}\n")
-    
-    print(f"Issues Found: {len(result.issues)}")
-    print(f"{'-'*50}")
-    
-    for i, issue in enumerate(result.issues, 1):
-        emoji = "🔴" if issue.severity == IssueSeverity.CRITICAL else "🟡" if issue.severity == IssueSeverity.HIGH else "🔵"
-        print(f"\n{emoji} Issue #{i} - {issue.type.value.upper()} ({issue.severity.value})")
-        if issue.line_number:
-            print(f"   Line: {issue.line_number}")
-        print(f"   Problem: {issue.description}")
-        print(f"   Fix: {issue.suggestion}")
-        if issue.code_snippet:
-            print(f"   Code: {issue.code_snippet}")
