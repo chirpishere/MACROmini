@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pre-commit hook for AI Code Review
+# Pre-commit hook for MACROmini
 # This hook runs before each commit to review staged changes
 
 RED='\033[0;31m'
