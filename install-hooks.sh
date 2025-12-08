@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install Git hooks for AI Code Review
+# Install Git hooks for MACROmini
 
 # Color codes
 GREEN='\033[0;32m'
@@ -14,7 +14,7 @@ if [ -z "$REPO_ROOT" ]; then
     exit 1
 fi
 
-echo -e "${GREEN}Installing AI Code Review Git hooks...${NC}"
+echo -e "${GREEN}Installing MACROmini Git hooks...${NC}"
 
 # Create .git/hooks directory if it doesn't exist
 mkdir -p "$REPO_ROOT/.git/hooks"
