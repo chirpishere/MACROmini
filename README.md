@@ -120,7 +120,7 @@ git add test.py
 git commit -m "Add test function"
 
 # Output:
-# Running AI Code Review...
+# Running MACROmini...
 # Review Results
 # ...
 ```
@@ -202,7 +202,7 @@ macromini/
 ## 🎨 Example Output
 
 ```
-🔍 Running AI Code Review...
+🔍 Running MACROmini...
 
 📊 Review Results
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
