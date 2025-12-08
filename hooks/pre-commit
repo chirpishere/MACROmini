@@ -22,7 +22,7 @@ if git diff --cached --quiet; then
     exit 0
 fi
 
-echo -e "${GREEN}🔍 Running AI Code Review...${NC}"
+echo -e "${GREEN}🔍 Running MACROmini...${NC}"
 echo ""
 
 # activate venv, run reviewer, get exite code, deactivate venv
