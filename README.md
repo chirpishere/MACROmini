@@ -25,8 +25,8 @@ A local, privacy-first AI code review system that automatically analyzes Git sta
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                 Developer                        │
-│          git commit -m "message"                 │
+│                 Developer                       │
+│          git commit -m "message"                │
 └───────────────────┬─────────────────────────────┘
                     ↓
             ┌───────────────┐
@@ -399,30 +399,6 @@ Core libraries (see `requirements.txt`):
 
 ---
 
-## 🚀 Future Phases
-
-### Phase 2: Multi-Agent System (Planned)
-- Coordinator agent + specialized agents (Security, Quality, Performance, Testing, Documentation, Style)
-- Agent communication via **LangGraph**
-- Parallel execution
-- Aggregated results from multiple perspectives
-
-### Phase 3: Intelligence & Context (Planned)
-- **RAG** integration for codebase awareness
-- **Vector database** (ChromaDB) for code context
-- Learning from feedback
-- Integration with linters/formatters
-- Historical code analysis
-
-### Phase 4: Polish & Production (Planned)
-- Advanced CLI with interactive mode
-- Per-project/per-language configuration
-- Performance optimization (caching, incremental analysis)
-- **VS Code extension** for inline reviews
-- Team collaboration features
-
----
-
 ## 🤝 Contributing
 
 This is currently a personal learning project in Phase 1. Contributions will be welcome once the multi-agent architecture is implemented in Phase 2.
@@ -446,7 +422,7 @@ MIT License - Feel free to use and modify for your own projects.
 
 ## 📧 Contact
 
-For questions or feedback: [Your contact info]
+For questions or feedback: sharvilchirputkar@gmail.com
 
 ---
 
