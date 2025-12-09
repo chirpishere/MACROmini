@@ -36,6 +36,10 @@ class CodeIssue(BaseModel):
     description: str = Field(description="What's wrong")
     suggestion: str = Field(description="How to fix it")
     code_snippet: Optional[str] = Field(None, description="Problematic code")
+    
+    # Phase 2: Multi-agent attribution
+    agent: str = Field(default="single-agent", description="Which agent found this issue")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="Agent's confidence level (0.0-1.0)")
 
 class ReviewResult(BaseModel):
     """Complete review result"""
