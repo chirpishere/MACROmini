@@ -399,12 +399,6 @@ Core libraries (see `requirements.txt`):
 
 ---
 
-## 🤝 Contributing
-
-This is currently a personal learning project in Phase 1. Contributions will be welcome once the multi-agent architecture is implemented in Phase 2.
-
----
-
 ## 📝 License
 
 MIT License - Feel free to use and modify for your own projects.
