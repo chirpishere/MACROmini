@@ -1,37 +1,66 @@
-# MACROmini - Multi Agent Code Review and Ochestration (mini)
+# MACROmini - Multi-Agent Code Review and Orchestration (mini)
 
-**Phase 1: Single-Agent Code Reviewer** 
+![LOGO](images/logo.png)
 
-A local, privacy-first AI code review system that automatically analyzes Git staged changes for security vulnerabilities, bugs, code quality issues, and performance problems using Ollama and Qwen2.5-Coder.
+### A local, privacy-first AI code review system that automatically analyzes Git staged changes using **5 specialized AI agents** running in parallel. Powered by LangGraph, Ollama, and Qwen2.5-Coder.
 
-> ⚠️ **Note:** This is Phase 1 of the project - a functional single-agent code reviewer. Future phases will add multi-agent orchestration, RAG-based context awareness, and advanced intelligence features.
 
 ---
 
-## 🎯 What It Does
+## What It Does
 
-- **Automatic Code Review**: Reviews all staged Git changes before commits
-- **Security Analysis**: Detects SQL injection, XSS, insecure authentication, secrets in code
-- **Bug Detection**: Finds logic errors, null pointer issues, race conditions
-- **Quality Checks**: Identifies code smells, anti-patterns, maintainability issues
-- **Performance Analysis**: Spots inefficient algorithms, memory leaks, N+1 queries
-- **Style Review**: Checks formatting, naming conventions, documentation gaps
+MACROmini uses **5 specialized AI agents** that work in parallel to analyze your code:
+
+### **Security Agent** (Always Active)
+- Detects SQL injection, XSS, command injection
+- Finds hardcoded secrets, API keys, passwords
+- Identifies weak authentication and authorization
+- Checks for insecure cryptography and dependencies
+
+### **Quality Agent** (Code Files)
+- Identifies code smells and anti-patterns
+- Measures cyclomatic complexity
+- Detects duplicated code and maintainability issues
+- Enforces SOLID principles
+
+### **Performance Agent** (Code Files)
+- Spots inefficient algorithms (O(n²) when O(n) possible)
+- Detects N+1 query problems
+- Finds memory leaks and unnecessary allocations
+- Identifies blocking operations and race conditions
+
+### **Style Agent** (Docs/Config/Web Files)
+- Reviews markdown documentation quality
+- Validates JSON/YAML/TOML configuration
+- Checks HTML semantics and accessibility
+- Audits CSS organization and best practices
+
+### **Testing Agent** (Test Files)
+- Analyzes test coverage gaps
+- Identifies test anti-patterns (flaky tests, hard-coded sleeps)
+- Reviews test quality (clear assertions, AAA structure)
+- Suggests missing edge case tests
+
+### **Key Features**
+- **Smart Routing**: Only relevant agents analyze each file type
+- **Parallel Execution**: All agents run simultaneously (3-4x faster)
+- **Intelligent Deduplication**: Merges overlapping issues from multiple agents
 - **Git Integration**: Blocks commits with critical issues via pre-commit hook
 - **100% Local**: All analysis runs on your machine - no data leaves your system
 
 ---
 
-## 🏗️ Architecture (Phase 1)
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                 Developer                        │
-│          git commit -m "message"                 │
+│              Developer Workflow                 │
+│           git commit -m "message"               │
 └───────────────────┬─────────────────────────────┘
                     ↓
             ┌───────────────┐
-            │ Pre-commit    │
-            │ Git Hook      │
+            │  Pre-commit   │
+            │   Git Hook    │
             └───────┬───────┘
                     ↓
         ┌───────────────────────┐
@@ -42,15 +71,37 @@ A local, privacy-first AI code review system that automatically analyzes Git sta
     ┌──────────────────────────┐
     │                          │
     ↓                          ↓
-┌─────────────┐         ┌──────────────┐
-│ Git Utils   │         │  LLM Client  │
-│ (git_utils) │         │ (llm_client) │
-└──────┬──────┘         └──────┬───────┘
-       ↓                       ↓
-   ┌────────┐           ┌──────────┐
-   │  Git   │           │  Ollama  │
-   │  Repo  │           │  (Local) │
-   └────────┘           └──────────┘
+┌─────────────┐         ┌──────────────────────┐
+│  Git Utils  │         │  LangGraph Workflow  │
+│             │         │  (graph.py)          │
+└─────────────┘         └──────────┬───────────┘
+                                   ↓
+                        ┌──────────────────────┐
+                        │   Router Node        │
+                        │ (Smart Agent         │
+                        │  Selection)          │
+                        └──────────┬───────────┘
+                                   ↓
+        ┌──────────────────────────┴──────────────────────┐
+        │              Parallel Agent Execution           │
+        │                                                 │
+    ┌───▼───┐  ┌────▼────┐  ┌─────▼─────┐  ┌───▼───┐  ┌───▼────┐
+    │Security│ │ Quality │  │Performance│  │ Style │  │Testing │
+    │ Agent  │ │  Agent  │  │   Agent   │  │ Agent │  │ Agent  │
+    └───┬───┘  └────┬────┘  └─────┬─────┘  └───┬───┘  └───┬────┘
+        │           │             │            │          │
+        └───────────┴─────────────┴────────────┴──────────┘
+                              ↓
+                    ┌──────────────────┐
+                    │   Aggregator     │
+                    │ (Deduplication & │
+                    │   Scoring)       │
+                    └────────┬─────────┘
+                             ↓
+                    ┌──────────────────┐
+                    │  Final Results   │
+                    │  with Verdict    │
+                    └──────────────────┘
 ```
 
 ---
@@ -59,7 +110,7 @@ A local, privacy-first AI code review system that automatically analyzes Git sta
 
 ### Prerequisites
 
-- **Python 3.13+** (or 3.10+)
+- **Python 3.10+** (tested on 3.13)
 - **Ollama** installed and running
 - **Qwen2.5-Coder:7b** model downloaded
 - **Git** repository
@@ -70,10 +121,13 @@ A local, privacy-first AI code review system that automatically analyzes Git sta
 # macOS (Homebrew)
 brew install ollama
 
+# Linux
+curl -fsSL https://ollama.com/install.sh | sh
+
 # Start Ollama server
 ollama serve
 
-# In another terminal, download the model
+# In another terminal, download the model (~4.7GB)
 ollama pull qwen2.5-coder:7b
 ```
 
@@ -85,7 +139,7 @@ git clone https://github.com/chirpishere/macromini.git
 cd macromini
 
 # Create virtual environment
-python -m venv venv
+python3 -m venv venv
 
 # Activate virtual environment
 source venv/bin/activate  # macOS/Linux
@@ -111,128 +165,58 @@ chmod +x .git/hooks/pre-commit
 
 ```bash
 # Make some changes to your code
-echo "def test(): pass" >> test.py
+echo "def login(user, pwd): return f'SELECT * FROM users WHERE name={user}'" > test.py
 
 # Stage the changes
 git add test.py
 
-# Try to commit - the hook will run automatically!
+# Try to commit - the multi-agent system will run!
 git commit -m "Add test function"
 
-# Output:
-# Running MACROmini...
-# Review Results
-# ...
+# Expected Output:
+# 🔍 MACROmini - Multi-Agent Code Review
+# ✓ Router completed
+# ✓ Security agent completed (found SQL injection!)
+# ✓ Quality agent completed (found complexity issues)
+# ✓ Performance agent completed
+# 
+# 📊 RESULTS: REJECT (Critical issues found)
+# Fix issues before committing!
 ```
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 macromini/
 ├── src/
 │   ├── __init__.py
-│   ├── llm_client.py      # Ollama LLM integration with LangChain
-│   ├── git_utils.py       # Git operations and diff parsing
-│   └── reviewer.py        # Main orchestrator for code review
+│   ├── reviewer.py                 # Main orchestrator & CLI
+│   ├── git_utils.py                # Git operations and diff parsing
+│   ├── agents/
+│   │   ├── base_agent.py           # Abstract agent with LLM logic
+│   │   ├── security_agent.py       # Security vulnerability detection
+│   │   ├── quality_agent.py        # Code quality analysis
+│   │   ├── performance_agent.py    # Performance optimization
+│   │   ├── style_agent.py          # Documentation/config style
+│   │   └── testing_agent.py        # Test coverage & quality
+│   └── orchestration/
+│       ├── state.py                # ReviewState TypedDict
+│       ├── router.py               # Smart agent selection
+│       ├── graph.py                # LangGraph workflow
+│       └── aggregator.py           # Result merging & deduplication
 ├── hooks/
-│   └── pre-commit         # Git hook template
-├── config/
-│   └── (future config files)
-├── testfiles/             # Test files (not tracked)
-├── requirements.txt       # Python dependencies
-├── install-hooks.sh       # Hook installation script
-└── README.md             # This file
+│   └── pre-commit                  # Git hook template
+├── testfiles/                      # Test files (not tracked)
+├── requirements.txt                # Python dependencies
+├── install-hooks.sh                # Hook installation script
+└── README.md                       # This file
 ```
 
 ---
 
-## 🔧 Components (Phase 1)
-
-### 1. **LLM Client** (`src/llm_client.py`)
-
-- Uses **LangChain** framework for LLM integration
-- Connects to **Ollama** running locally
-- Structured output with **Pydantic** models
-- Retry logic and fallback JSON parsing
-- Returns: `ReviewResult` with issues, summary, score (0-10)
-
-**Key Classes:**
-- `OllamaCodeReviewer`: Main client
-- `CodeIssue`: Individual issue (type, severity, line, description, suggestion)
-- `ReviewResult`: Complete review with issues list and quality score
-
-### 2. **Git Utilities** (`src/git_utils.py`)
-
-- Wraps **GitPython** for repository operations
-- Gets staged/unstaged changes with diffs
-- Parses diff format to extract line numbers
-- Handles edge cases: new repos, binary files, renamed files
-- Returns: `FileChange` objects with diffs and context
-
-**Key Methods:**
-- `get_staged_changes()`: Files ready to commit
-- `get_unstaged_changes()`: Working directory changes
-- `get_file_content_with_context()`: Code with surrounding lines
-
-### 3. **Code Reviewer** (`src/reviewer.py`)
-
-- Orchestrates the review workflow
-- Checks Ollama connection
-- Processes each staged file through LLM
-- Displays beautiful results with **Rich** library
-- Returns exit codes: `0` (pass) or `1` (critical issues)
-
-**Output:**
-- Summary table: file, lines changed, score, issues count
-- Detailed issue panels with severity indicators
-- Final verdict: PASSED / WARNINGS / FAILED
-
-### 4. **Pre-commit Hook** (`hooks/pre-commit`)
-
-- Bash script that Git runs before commits
-- Activates virtual environment
-- Runs `reviewer.py` on staged changes
-- Blocks commit if critical issues found
-- Bypass option: `git commit --no-verify`
-
----
-
-## 🎨 Example Output
-
-```
-🔍 Running MACROmini...
-
-📊 Review Results
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-File                    Lines    Score    Issues    Critical
-────────────────────────────────────────────────────────────────
-auth.py                +15/-3   3/10     3         2
-utils.py               +8/-2    7/10     2         0
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔴 Critical Issue: SQL Injection Vulnerability
-  File: auth.py, Line: 23
-  Problem: User input directly interpolated into SQL query
-  Fix: Use parameterized queries or an ORM
-
-🟡 High Issue: Missing Error Handling
-  File: utils.py, Line: 45
-  Problem: No exception handling for file operations
-  Fix: Wrap file operations in try-except blocks
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-❌ REVIEW FAILED - CRITICAL ISSUES MUST BE FIXED
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Please fix the issues above before committing.
-To bypass (NOT recommended): git commit --no-verify
-```
-
----
-
-## 🛠️ Usage
+## Usage
 
 ### Manual Review (Without Committing)
 
@@ -241,25 +225,31 @@ To bypass (NOT recommended): git commit --no-verify
 source venv/bin/activate
 
 # Stage your changes
-git add file.py
+git add src/auth.py
 
-# Run reviewer manually
+# Run reviewer manually   (you might need to change import paths in code for standalone testing)
 python src/reviewer.py
+
+# You'll see:
+# - Real-time progress as agents complete
+# - Which agents analyzed which files
+# - Deduplicated results
+# - Final verdict
 ```
 
 ### Automatic Review (Via Git Hook)
 
 ```bash
 # Normal workflow - hook runs automatically
-git add file.py
-git commit -m "Add new feature"
+git add src/auth.py
+git commit -m "Add authentication"
 
 # If critical issues found:
-# ❌ Commit blocked! Fix issues first.
+# ❌ Commit blocked! Fix the 1 critical issue(s).
 
 # After fixing:
-git add file.py
-git commit -m "Add new feature (fixed issues)"
+git add src/auth.py
+git commit -m "Add authentication (fixed SQL injection)"
 # ✅ Code review passed! Proceeding with commit.
 ```
 
@@ -269,7 +259,7 @@ git commit -m "Add new feature (fixed issues)"
 # Skip the review hook
 git commit --no-verify -m "Emergency hotfix"
 
-# or shorter
+# shorter alternative
 git commit -n -m "Emergency hotfix"
 ```
 
@@ -277,117 +267,84 @@ git commit -n -m "Emergency hotfix"
 
 ---
 
-## ⚙️ Configuration (Future)
+## Configuration
 
-Phase 1 uses hardcoded settings. Future phases will add:
+### Current Configuration
 
-- `config/config.yaml` for project-wide settings
-- Per-language rules and thresholds
-- Custom severity levels
-- Ignored patterns/files
+- **Model**: `qwen2.5-coder:7b`
+- **Temperature**: `0` (deterministic)
+- **Retry**: 3 attempts with exponential backoff
+- **Context**: 10 lines before/after changes
+- **Severity Weights**: Critical=20, High=10, Medium=5, Low=2, Info=1
+- **Verdict Thresholds**: Approve(<5), Comment(5-15), Reject(>15 or critical)
 
----
+### Customization
 
-## 🧪 Testing
+You can modify agent behavior by editing the system prompts in each agent file.
 
-### Test the Hook
-
-```bash
-# Create a test file with intentional issues
-cat > test_bad.py << 'EOF'
-def login(username, password):
-    query = f"SELECT * FROM users WHERE username='{username}'"
-    return execute_query(query)
-EOF
-
-# Stage and try to commit
-git add test_bad.py
-git commit -m "Test commit"
-
-# Expected: Commit blocked with SQL injection warning
-```
-
-### Test Manual Review
-
-```bash
-# Test the LLM client directly
-python src/llm_client.py
-
-# Test Git utilities
-python -c "from src.git_utils import GitRepository; repo = GitRepository(); print(repo.get_staged_changes())"
-```
+You can also modify the temperature, code context and other scoring/deduplicating defaults.
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
-### "Connection failed: Could not connect to Ollama"
+### Review takes too long (>2 minutes)
 
-**Solution:**
+**Possible causes:**
+1. **Model not loaded**: First run loads model into memory (~30s)
+2. **Large files**: LLM processes more context
+3. **Complex code**: Agents spend more time analyzing
+
+**Solutions:**
 ```bash
-# Make sure Ollama is running
-ollama serve
+# Pre-load the model
+ollama run qwen2.5-coder:7b "hello"
 
-# In another terminal, verify the model is installed
-ollama list | grep qwen2.5-coder
+# Review smaller changesets
+git add specific-file.py  # Instead of git add .
+
+# Check if Ollama has enough resources
+# Recommended: 8GB+ RAM, 4GB VRAM for GPU acceleration
 ```
 
-### "Virtual environment not found"
+### Agents finding too many false positives
 
 **Solution:**
-```bash
-# Create the virtual environment
-python -m venv venv
+Adjust System prompts for that specific agent.
 
-# Activate and install dependencies
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Hook not running
+### "JSON parsing failed" errors
 
 **Solution:**
-```bash
-# Verify hook is installed and executable
-ls -la .git/hooks/pre-commit
+Retry checks have been added to force json output. 
+Test LLM output explicitly to figure out what the output format it.
 
-# If missing, reinstall:
-./install-hooks.sh
-
-# Or manually:
-cp hooks/pre-commit .git/hooks/pre-commit
-chmod +x .git/hooks/pre-commit
-```
-
-### "No module named 'langchain'"
-
-**Solution:**
-```bash
-# Make sure you're in the virtual environment
-source venv/bin/activate
-
-# Reinstall dependencies
-pip install -r requirements.txt
-```
+(The most common error here is that json response appears between markdown blocks. I have fixed that, since this was the only error I noticed. Feel free to tune it according to your needs.)
 
 ---
 
-## 📚 Dependencies
+## Dependencies
 
 Core libraries (see `requirements.txt`):
 
-- **langchain** (0.3.7) - LLM framework
+### LangChain Ecosystem
+- **langchain** (0.3.7) - LLM application framework
 - **langchain-ollama** (0.2.0) - Ollama integration
-- **gitpython** (3.1.43) - Git operations
-- **pydantic** (2.9.2) - Data validation
+- **langchain-core** (0.3.15) - Core abstractions
+- **langgraph** (0.2.45) - Multi-agent orchestration with state graphs
+
+### Git & Data
+- **gitpython** (3.1.43) - Git repository operations
+- **pydantic** (2.9.2) - Data validation and parsing
+
+### UI & Utilities
 - **rich** (13.9.4) - Beautiful terminal output
-- **pyyaml** (6.0.2) - Configuration parsing (future)
-- **python-dotenv** (1.0.1) - Environment variables (future)
 - **requests** (2.32.3) - HTTP client for Ollama API
+- **pyyaml** (6.0.2) - Configuration parsing (future use)
+- **python-dotenv** (1.0.1) - Environment variables (future use)
 
 ---
 
-## 🔐 Privacy & Security
+## Privacy & Security
 
 **All analysis happens locally:**
 - ✅ Code never leaves your machine
@@ -399,57 +356,21 @@ Core libraries (see `requirements.txt`):
 
 ---
 
-## 🚀 Future Phases
+## Star History
 
-### Phase 2: Multi-Agent System (Planned)
-- Coordinator agent + specialized agents (Security, Quality, Performance, Testing, Documentation, Style)
-- Agent communication via **LangGraph**
-- Parallel execution
-- Aggregated results from multiple perspectives
-
-### Phase 3: Intelligence & Context (Planned)
-- **RAG** integration for codebase awareness
-- **Vector database** (ChromaDB) for code context
-- Learning from feedback
-- Integration with linters/formatters
-- Historical code analysis
-
-### Phase 4: Polish & Production (Planned)
-- Advanced CLI with interactive mode
-- Per-project/per-language configuration
-- Performance optimization (caching, incremental analysis)
-- **VS Code extension** for inline reviews
-- Team collaboration features
-
----
-
-## 🤝 Contributing
-
-This is currently a personal learning project in Phase 1. Contributions will be welcome once the multi-agent architecture is implemented in Phase 2.
-
----
-
-## 📝 License
-
-MIT License - Feel free to use and modify for your own projects.
-
----
-
-## 🙏 Acknowledgments
-
-- **Ollama** - Local LLM inference
-- **Qwen2.5-Coder** - Excellent code-focused LLM
-- **LangChain** - LLM application framework
-- **Rich** - Beautiful terminal output
+If you find this project useful, please consider giving it a star! ⭐
 
 ---
 
 ## 📧 Contact
 
-For questions or feedback: [Your contact info]
+- **Author**: Sharvil Chirputkar (sharvilchirputkar@gmail[dot]com)
+- **GitHub**: [@chirpishere](https://github.com/chirpishere)
+- **Project**: [MACROmini](https://github.com/chirpishere/macromini)
+
+For questions, feedback, or collaboration, feel free to open an issue!
 
 ---
 
-**Built with ❤️ for local, privacy-first AI code review**
+**Built with trust for local, privacy-first AI code review**
 
-*Last updated: December 7, 2024 - Phase 1 Complete*

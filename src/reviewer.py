@@ -1,17 +1,19 @@
 """
-Main Code Reviewer
-Combines Git utilities and LLM client to review staged code changes.
+Main Code Reviewer for MACROmini
+Combines Git utilities and multi-agent LLM system to review staged code changes.
 """
 
-from typing import List, Dict
+from typing import List, Dict, Any
 from dataclasses import dataclass
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from langchain_ollama import ChatOllama
 
 from git_utils import GitRepository, FileChange, ChangeType
-from llm_client import OllamaCodeReviewer, ReviewResult, IssueSeverity, IssueType
+from orchestration.graph import stream_multi_agent_review
+from orchestration.state import ReviewState
 
 
 @dataclass
@@ -19,26 +21,27 @@ class FileReviewResult:
     """Review result for a single file"""
     file_path: str
     change_type: ChangeType
-    review: ReviewResult
+    review_state: ReviewState
     lines_changed: int
 
 
 class CodeReviewer:
     """
     Main code review orchestrator
-    Combines Git operations and LLM analysis
+    Combines Git operations and multi-agent LLM analysis
     """
     
-    def __init__(self, repo_path: str = "."):
+    def __init__(self, repo_path: str = ".", model: str = "qwen2.5-coder:7b"):
         """
         Initialize the code reviewer
         
         Args:
             repo_path: Path to Git repository (default: current directory)
+            model: Ollama model to use (default: qwen2.5-coder:7b)
         """
         self.console = Console()
         self.git_repo = GitRepository(repo_path)
-        self.llm_reviewer = OllamaCodeReviewer()
+        self.llm = ChatOllama(model=model, temperature=0)
     
     def review_staged_changes(self) -> List[FileReviewResult]:
         """
@@ -47,7 +50,6 @@ class CodeReviewer:
         Returns:
             List of FileReviewResult for each changed file
         """
-        # Get staged changes
         self.console.print("\n[bold cyan] Analyzing staged changes...[/bold cyan]\n")
         
         try:
@@ -83,7 +85,8 @@ class CodeReviewer:
                     continue
                 
                 if change.change_type == ChangeType.ADDED:
-                    code = self.git_repo.get_full_file_content(change.file_path) # new file so get entire content
+                    # new file so get entire content
+                    code = self.git_repo.get_full_file_content(change.file_path)
                 else:
                     # modified file so review only the changed lines with context
                     all_lines = change.added_lines + change.removed_lines
@@ -96,14 +99,25 @@ class CodeReviewer:
                     else:
                         code = self.git_repo.get_full_file_content(change.file_path)
                 
-                # Review with LLM
-                review = self.llm_reviewer.review_code(code, change.file_path)
+                diff = change.diff
+                
+                # Review with multi-agent system (streaming)
+                final_state = None
+                for update in stream_multi_agent_review(
+                    file_path=change.file_path,
+                    code=code,
+                    diff=diff,
+                    llm=self.llm,
+                    change_type=change.change_type.value
+                ):
+                    node_name = list(update.keys())[0] if update else "unknown"
+                    final_state = update.get(node_name, {})
                 
                 # Store result
                 result = FileReviewResult(
                     file_path=change.file_path,
                     change_type=change.change_type,
-                    review=review,
+                    review_state=final_state,
                     lines_changed=len(change.added_lines) + len(change.removed_lines)
                 )
                 results.append(result)
@@ -114,7 +128,7 @@ class CodeReviewer:
     
     def display_results(self, results: List[FileReviewResult]):
         """
-        Display review results in a beautiful format
+        Display review results in a beautiful format (Multi-Agent)
         
         Args:
             results: List of file review results
@@ -123,80 +137,128 @@ class CodeReviewer:
             return
         
         self.console.print("\n" + "="*70 + "\n")
-        self.console.print("[bold cyan] CODE REVIEW RESULTS[/bold cyan]\n")
+        self.console.print("[bold cyan]MACROMINI RESULTS[/bold cyan]\n")
         
         table = Table(title="Summary", show_header=True, header_style="bold magenta")
         table.add_column("File", style="cyan")
         table.add_column("Lines", justify="right")
         table.add_column("Score", justify="center")
         table.add_column("Issues", justify="center")
-        table.add_column("Critical", justify="center")
+        table.add_column("Verdict", justify="center")
         
         total_issues = 0
         total_critical = 0
         
         for result in results:
+            state = result.review_state
+            deduplicated_issues = state.get("deduplicated_issues", [])
+            score = state.get("final_score", 0)
+            verdict = state.get("verdict", "unknown")
+            
             critical_count = sum(
-                1 for issue in result.review.issues 
-                if issue.severity == IssueSeverity.CRITICAL
+                1 for issue in deduplicated_issues 
+                if issue.get("severity", "").lower() == "critical"
             )
             
-            score = result.review.score
-            if score >= 8:
-                score_str = f"[green]{score}/10[/green]"
-            elif score >= 6:
-                score_str = f"[yellow]{score}/10[/yellow]"
+            if score < 5:
+                score_str = f"[green]{score}[/green]"
+            elif score < 15:
+                score_str = f"[yellow]{score}[/yellow]"
             else:
-                score_str = f"[red]{score}/10[/red]"
+                score_str = f"[red]{score}[/red]"
             
-            critical_str = f"[red]{critical_count}[/red]" if critical_count > 0 else "[green]0[/green]"
+            if verdict == "approve":
+                verdict_str = "[green]✓ APPROVE[/green]"
+            elif verdict == "comment":
+                verdict_str = "[yellow]⚠ COMMENT[/yellow]"
+            else:
+                verdict_str = "[red]✗ REJECT[/red]"
             
             table.add_row(
                 result.file_path,
                 str(result.lines_changed),
                 score_str,
-                str(len(result.review.issues)),
-                critical_str
+                str(len(deduplicated_issues)),
+                verdict_str
             )
             
-            total_issues += len(result.review.issues)
+            total_issues += len(deduplicated_issues)
             total_critical += critical_count
         
         self.console.print(table)
         self.console.print()
         
-        # Detailed issues
         for result in results:
-            if not result.review.issues:
+            state = result.review_state
+            deduplicated_issues = state.get("deduplicated_issues", [])
+            summary_info = state.get("summary", {})
+            
+            if not deduplicated_issues:
                 continue
             
             self.console.print(f"\n[bold cyan]📄 {result.file_path}[/bold cyan]")
-            self.console.print(f"[dim]{result.review.summary}[/dim]\n")
             
-            for i, issue in enumerate(result.review.issues, 1):
-                if issue.severity == IssueSeverity.CRITICAL:
+            # Show aggregation stats with deduplication info
+            if summary_info:
+                original_count = summary_info.get('original_issues', 0)
+                dedup_savings = summary_info.get('deduplication_savings', 0)
+                agents_list = ', '.join(summary_info.get('agents_run', []))
+                
+                stats_text = f"[dim]Agents: {agents_list} | Issues: {summary_info.get('total_issues', 0)}"
+                
+                if dedup_savings > 0:
+                    stats_text += f" (merged {dedup_savings} duplicate{'s' if dedup_savings > 1 else ''})"
+                
+                stats_text += "[/dim]\n"
+                self.console.print(stats_text)
+            
+            for i, issue in enumerate(deduplicated_issues, 1):
+                severity = issue.get("severity", "info").lower()
+                
+                if severity == "critical":
                     emoji = "🔴"
                     color = "red"
-                elif issue.severity == IssueSeverity.HIGH:
+                elif severity == "high":
                     emoji = "🟡"
                     color = "yellow"
-                elif issue.severity == IssueSeverity.MEDIUM:
+                elif severity == "medium":
                     emoji = "🟠"
                     color = "orange1"
                 else:
                     emoji = "🔵"
                     color = "blue"
                 
-                issue_text = f"[bold]{issue.type.value.upper()}[/bold] - {issue.severity.value}\n\n"
+                # Show which agents found this issue (may be multiple after deduplication)
+                found_by = issue.get("found_by_agents", [issue.get("agent", "unknown")])
+                agent_count = issue.get("agent_count", 1)
                 
-                if issue.line_number:
-                    issue_text += f"📍 Line {issue.line_number}\n\n"
+                if agent_count > 1:
+                    agent_text = f"Found by: {', '.join(found_by)} ({agent_count} agents agree)"
+                else:
+                    agent_text = f"Found by: {found_by[0]}"
                 
-                issue_text += f"[bold]Problem:[/bold]\n{issue.description}\n\n"
-                issue_text += f"[bold]Suggestion:[/bold]\n{issue.suggestion}"
+                issue_text = f"[bold]{issue.get('type', 'unknown').upper()}[/bold] - {severity.upper()}\n"
+                issue_text += f"[dim]{agent_text}[/dim]\n\n"
                 
-                if issue.code_snippet:
-                    issue_text += f"\n\n[bold]Code:[/bold]\n[dim]{issue.code_snippet}[/dim]"
+                line_num = issue.get("line_number")
+                if line_num:
+                    issue_text += f"📍 Line {line_num}\n\n"
+                
+                issue_text += f"[bold]Problem:[/bold]\n{issue.get('description', 'No description')}\n\n"
+                
+                # Show related concerns if multiple agents found similar issues
+                related = issue.get("related_concerns", [])
+                if related:
+                    issue_text += f"[bold]Related Concerns:[/bold]\n"
+                    for concern in related:
+                        issue_text += f"  • {concern}\n"
+                    issue_text += "\n"
+                
+                issue_text += f"[bold]Suggestion:[/bold]\n{issue.get('suggestion', 'No suggestion')}"
+                
+                code_snippet = issue.get("code_snippet")
+                if code_snippet:
+                    issue_text += f"\n\n[bold]Code:[/bold]\n[dim]{code_snippet}[/dim]"
                 
                 panel = Panel(
                     issue_text,
@@ -247,13 +309,15 @@ class CodeReviewer:
         """
         # Check Ollama connection
         self.console.print("[cyan]Checking Ollama connection...[/cyan]")
-        if not self.llm_reviewer.test_connection():
-            self.console.print("\n[red] Cannot connect to Ollama[/red]")
+        try:
+            # Test connection by making a simple call
+            self.llm.invoke("test")
+            self.console.print("[green]✓ Connected to Ollama[/green]")
+        except Exception as e:
+            self.console.print(f"\n[red]Cannot connect to Ollama: {e}[/red]")
             self.console.print("[yellow]Make sure Ollama is running:[/yellow]")
             self.console.print("[dim]  ollama serve[/dim]\n")
             return False
-        
-        self.console.print("[green]✓ Connected to Ollama[/green]")
         
         results = self.review_staged_changes()
         
@@ -264,15 +328,14 @@ class CodeReviewer:
         
         return passed
     
-
-# CLI entry point
+#CLI entry point for standalone testing
 if __name__ == "__main__":
     import sys
     
     console = Console()
     
-    console.print("\n[bold cyan]MACROmini[/bold cyan]")
-    console.print("[dim]Powered by Ollama + Qwen2.5-Coder[/dim]\n")
+    console.print("\n[bold cyan]MACROmini - Multi-Agent Code Review and Orchestration[/bold cyan]")
+    console.print("[dim]Phase 2: Powered by Ollama + LangGraph + 5 Specialist Agents[/dim]\n")
     
     try:
         reviewer = CodeReviewer()

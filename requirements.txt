@@ -8,6 +8,9 @@ rich==13.9.4
 python-dotenv==1.0.1
 requests==2.32.3
 
-# Phase 2 (not installing yet, just noting for future)
+# Phase 2 - Multi-Agent System
+langgraph==0.2.45
+
+# Phase 3 (future)
 # langgraph==0.2.45
 # chromadb==0.5.23
