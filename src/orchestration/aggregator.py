@@ -1,319 +1,254 @@
 """
-Result Aggregator for MACROmini
+Aggregator for MACROmini
 
-Combines results from multiple specialist agents, deduplicates issues,
-resolves severity conflicts, and calculates final review verdict.
+Combines results from multiple agents into a final review.
+Includes smart deduplication that merges issues pointing to the same code segment.
 """
 
-from typing import List, Dict, Any, Tuple, Optional
-from difflib import SequenceMatcher
-from collections import defaultdict
+from typing import Dict, List, Any, Optional, Tuple
 
-from src.orchestration.state import get_all_agent_issues, count_issues_by_severity
-
-AGENT_WEIGHTS = {
-    "security": 2.0,      # Highest priority
-    "quality": 1.5,
-    "performance": 1.3,
-    "testing": 1.2,
-    "documentation": 1.0,
-    "style": 0.5,         # Lowest priority
-}
 
 SEVERITY_WEIGHTS = {
-    "critical": 10,
-    "high": 5,
-    "medium": 2,
-    "low": 1,
-    "info": 0.5,
+    "critical": 20,
+    "high": 10,
+    "medium": 5,
+    "low": 2,
+    "info": 1
 }
 
-# Deduplication thresholds
-SIMILARITY_THRESHOLD = 0.75
-LINE_PROXIMITY = 2
+# Severity ordering for comparison (higher index = more severe)
+SEVERITY_ORDER = ["info", "low", "medium", "high", "critical"]
 
-# Verdict thresholds
-REJECT_SCORE_THRESHOLD = 15
-COMMENT_SCORE_THRESHOLD = 5
-
-
-def calculate_text_similarity(text1: str, text2: str) -> float:
+def get_line_range(issue: Dict[str, Any]) -> Optional[Tuple[int, int]]:
     """
-    Calculate similarity between two text strings using SequenceMatcher.
-    """
-    return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
-
-
-def are_issues_similar(issue1: Dict[str, Any], issue2: Dict[str, Any]) -> bool:
-    """
-    Determine if two issues are likely duplicates.
-    
-    Uses fuzzy matching on line number proximity and text similarity.
+    Extract the line range from an issue.
     
     Args:
-        issue1: First issue dictionary
-        issue2: Second issue dictionary
+        issue: Issue dictionary
         
     Returns:
-        True if issues are likely duplicates
+        Tuple of (start_line, end_line) or None if no line info
     """
-    line1 = issue1.get("line_number")
-    line2 = issue2.get("line_number")
+    line_num = issue.get("line_number")
     
-    if line1 is None or line2 is None:
-        desc_similarity = calculate_text_similarity(
-            issue1.get("description", ""),
-            issue2.get("description", "")
-        )
-        return desc_similarity > 0.9
+    if line_num is None:
+        return None
     
-    line_distance = abs(line1 - line2)
-    if line_distance > LINE_PROXIMITY:
-        return False
+    if isinstance(line_num, int):
+        return (line_num, line_num)
     
-    desc_similarity = calculate_text_similarity(
-        issue1.get("description", ""),
-        issue2.get("description", "")
-    )
+    if isinstance(line_num, (tuple, list)) and len(line_num) == 2:
+        return (line_num[0], line_num[1])
     
-    return desc_similarity >= SIMILARITY_THRESHOLD
+    return None
 
 
-def get_severity_priority(severity: str) -> int:
+def ranges_overlap(range1: Tuple[int, int], range2: Tuple[int, int]) -> bool:
     """
-    Get numeric priority for severity level (higher = more severe).
+    Check if two line ranges overlap or are adjacent.
     
     Args:
-        severity: Severity string (critical, high, medium, low, info)
+        range1: (start1, end1)
+        range2: (start2, end2)
         
     Returns:
-        Priority number (5=critical, 1=info)
+        True if ranges overlap or are within 2 lines of each other
     """
-    priority_map = {
-        "critical": 5,
-        "high": 4,
-        "medium": 3,
-        "low": 2,
-        "info": 1,
-    }
-    return priority_map.get(severity.lower(), 0)
+    start1, end1 = range1
+    start2, end2 = range2
+    
+    # Check for overlap or adjacency (within 2 lines)
+    # This catches issues that are part of the same code block
+    return not (end1 + 2 < start2 or end2 + 2 < start1)
 
 
-def merge_duplicate_issues(issues: List[Dict[str, Any]]) -> Dict[str, Any]:
+def merge_issues(issues: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Merge a group of duplicate issues into a single issue.
+    Merge multiple issues pointing to the same code segment.
+    Keeps the highest severity issue and tracks all contributing agents.
     
-    Strategy:
-    - Take highest severity
-    - Concatenate unique descriptions
-    - Combine agent lists
-    - Average confidence scores
-    - Keep most specific suggestion
+    Args:
+        issues: List of issues to merge
+        
+    Returns:
+        Single merged issue with combined information
     """
-    if len(issues) == 1:
-        return issues[0]
-    
-    # Sort by severity
+    # Sort by severity (highest first)
     sorted_issues = sorted(
         issues,
-        key=lambda x: get_severity_priority(x.get("severity", "info")),
+        key=lambda x: SEVERITY_ORDER.index(x.get("severity", "info").lower()),
         reverse=True
     )
     
     merged = sorted_issues[0].copy()
     
-    #get unique set of agents to avoid repeated agent issues
-    agents = set()
+    agents = []
+    descriptions = []
+    suggestions = []
+    
     for issue in issues:
         agent = issue.get("agent", "unknown")
-        agents.add(agent)
-    
-    descriptions = []
-    seen_descriptions = set()
-    for issue in sorted_issues:
-        desc = issue.get("description", "").strip()
-        is_unique = True
-        for seen in seen_descriptions:
-            if calculate_text_similarity(desc, seen) > 0.8:
-                is_unique = False
-                break
+        if agent not in agents:
+            agents.append(agent)
         
-        if is_unique and desc:
+        desc = issue.get("description", "")
+        if desc and desc not in descriptions:
             descriptions.append(desc)
-            seen_descriptions.add(desc)
+        
+        sugg = issue.get("suggestion", "")
+        if sugg and sugg not in suggestions:
+            suggestions.append(sugg)
     
-    merged["description"] = " | ".join(descriptions) if len(descriptions) > 1 else descriptions[0]
+    merged["found_by_agents"] = agents
+    merged["agent_count"] = len(agents)
     
-    # Combine suggestions (take longest/most detailed)
-    suggestions = [issue.get("suggestion", "") for issue in sorted_issues]
-    merged["suggestion"] = max(suggestions, key=len) if suggestions else ""
+    if len(descriptions) > 1:
+        merged["description"] = descriptions[0]
+        merged["related_concerns"] = descriptions[1:]
     
-    confidences = [issue.get("confidence", 1.0) for issue in issues]
-    avg_confidence = sum(confidences) / len(confidences)
-    #boosted confidence when multiple agents agree
-    merged["confidence"] = min(1.0, avg_confidence * (1 + 0.1 * (len(issues) - 1)))
-    
-    # Store which agents found this issue
-    merged["agents"] = sorted(list(agents))
-    merged["duplicate_count"] = len(issues)
+    if len(suggestions) > 1:
+        merged["suggestion"] = " | ".join(suggestions)
     
     return merged
 
 
 def deduplicate_issues(all_issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Deduplicate issues found by multiple agents.
+    Deduplicate issues by grouping those pointing to the same or overlapping code segments.
+    For each segment, keep only the highest severity issue.
     
-    Simple strategy: Issues within ±5 lines are considered duplicates.
-    Merge them by combining descriptions from different agents.
+    Strategy:
+    1. Group issues by line range (with overlap detection)
+    2. For each group, merge into single issue with highest severity
+    3. Track which agents contributed to each deduplicated issue
+    
+    Args:
+        all_issues: All issues from all agents
+        
+    Returns:
+        Deduplicated list of issues
     """
-    if not all_issues:
-        return []
-    
-    LINE_RANGE = 5  # Issues within 5 lines are duplicates
-    
-    clusters: List[List[Dict[str, Any]]] = []
-    processed_ids = set()
+    issues_with_lines = []
+    issues_without_lines = []
     
     for issue in all_issues:
-        issue_id = id(issue)
-        if issue_id in processed_ids:
-            continue
-        
-        # Start new cluster with this issue
-        cluster = [issue]
-        processed_ids.add(issue_id)
-        
-        issue_line = issue.get("line_number")
-        
-        # Find other issues within line range
-        for other_issue in all_issues:
-            other_id = id(other_issue)
-            if other_id in processed_ids:
-                continue
-            
-            other_line = other_issue.get("line_number")
-            
-            # Check if within range
-            if issue_line is not None and other_line is not None:
-                if abs(issue_line - other_line) <= LINE_RANGE:
-                    cluster.append(other_issue)
-                    processed_ids.add(other_id)
-            elif issue_line is None and other_line is None:
-                # Both have no line number - group by description similarity
-                if calculate_text_similarity(
-                    issue.get("description", ""),
-                    other_issue.get("description", "")
-                ) > 0.8:
-                    cluster.append(other_issue)
-                    processed_ids.add(other_id)
-        
-        clusters.append(cluster)
+        line_range = get_line_range(issue)
+        if line_range:
+            issues_with_lines.append((line_range, issue))
+        else:
+            issues_without_lines.append(issue)
     
-    # Merge each cluster
-    deduplicated = [merge_duplicate_issues(cluster) for cluster in clusters]
+    # Group overlapping issues
+    groups = []
+    
+    for line_range, issue in issues_with_lines:
+        merged_into_group = False
+        
+        for group in groups:
+            for existing_range, _ in group:
+                if ranges_overlap(line_range, existing_range):
+                    group.append((line_range, issue))
+                    merged_into_group = True
+                    break
+            
+            if merged_into_group:
+                break
+        
+        #no overlap found, create new group
+        if not merged_into_group:
+            groups.append([(line_range, issue)])
+    
+    #merge issues within each group
+    deduplicated = []
+    
+    for group in groups:
+        group_issues = [issue for _, issue in group]
+        
+        if len(group_issues) > 1:
+            merged_issue = merge_issues(group_issues)
+            deduplicated.append(merged_issue)
+        else:
+            issue = group_issues[0]
+            issue["found_by_agents"] = [issue.get("agent", "unknown")]
+            issue["agent_count"] = 1
+            deduplicated.append(issue)
+
+    for issue in issues_without_lines:
+        issue["found_by_agents"] = [issue.get("agent", "unknown")]
+        issue["agent_count"] = 1
+        deduplicated.append(issue)
     
     return deduplicated
 
 
-def calculate_weighted_score(issues: List[Dict[str, Any]]) -> float:
-    """
-    Calculate weighted score based on issue severity and agent importance.
-    
-    Formula: sum(severity_weight * agent_weight * confidence) for each issue
-    Higher weighted score implies severe errors
-    """
-    score = 0.0
-    
-    for issue in issues:
-        severity = issue.get("severity", "info").lower()
-        agents = issue.get("agents", [issue.get("agent", "unknown")])
-        confidence = issue.get("confidence", 1.0)
-        
-        severity_weight = SEVERITY_WEIGHTS.get(severity, 0)
-        
-        # Get highest agent weight
-        agent_weight = max(
-            [AGENT_WEIGHTS.get(agent, 1.0) for agent in agents],
-            default=1.0
-        )
-        
-        issue_score = severity_weight * agent_weight * confidence
-        score += issue_score
-    
-    return round(score, 2)
-
-
-def determine_verdict(
-    score: float,
-    severity_counts: Dict[str, int]
-) -> str:
-    """
-    Determine final review verdict based on score and issue counts.
-    
-    Verdict logic:
-    - REJECT: Any critical issues OR score > 15
-    - COMMENT: Any high issues OR score > 5
-    - APPROVE: Otherwise
-    """
-
-    if severity_counts.get("critical", 0) > 0:
-        return "reject"
-    
-    if score > REJECT_SCORE_THRESHOLD:
-        return "reject"
-    
-    if severity_counts.get("high", 0) > 0:
-        return "comment"
-    
-    if score > COMMENT_SCORE_THRESHOLD:
-        return "comment"
-    
-    return "approve"
-
-
 def aggregate_review_results(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Main aggregation function for multi-agent review results.
+    Aggregate results from all agents with smart deduplication.
     
-    Performs:
-    1. Collection of all agent issues
-    2. Deduplication (fuzzy matching)
-    3. Severity conflict resolution (handled in merge)
-    4. Weighted scoring
-    5. Final verdict determination
+    Process:
+    1. Collect all issues from all agents
+    2. Deduplicate by line range (merge overlapping issues)
+    3. Calculate score based on unique issues only
+    4. Determine verdict
+    
+    Args:
+        state: ReviewState with agent_results filled
+        
+    Returns:
+        Updated state with:
+        - deduplicated_issues: Unique issues (merged by line segment)
+        - final_score: Weighted score based on unique issues
+        - verdict: "approve", "comment", or "reject"
+        - summary: Statistics about the review
     """
+    agent_results = state.get("agent_results", {})
     
+    all_issues = []
+    for agent_name, issues in agent_results.items():
+        for issue in issues:
+            issue["agent"] = agent_name
+            all_issues.append(issue)
     
-    # Collect all issues from all agents
-    all_issues = get_all_agent_issues(state)
-    
-    # Deduplicate issues
     deduplicated_issues = deduplicate_issues(all_issues)
     
-    # Count issues by severity
-    severity_counts = count_issues_by_severity(deduplicated_issues)
+    total_score = 0
+    severity_counts = {
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "low": 0,
+        "info": 0
+    }
     
-    # Calculate weighted score
-    weighted_score = calculate_weighted_score(deduplicated_issues)
+    for issue in deduplicated_issues:
+        severity = issue.get("severity", "info").lower()
+        weight = SEVERITY_WEIGHTS.get(severity, 1)
+        total_score += weight
+        
+        if severity in severity_counts:
+            severity_counts[severity] += 1
     
-    # Determine final verdict
-    verdict = determine_verdict(weighted_score, severity_counts)
+    if severity_counts["critical"] > 0:
+        verdict = "reject"
+    elif total_score > 15:
+        verdict = "reject"
+    elif total_score > 5:
+        verdict = "comment"
+    else:
+        verdict = "approve"
     
-    # Generate summary statistics
-    total_issues = len(deduplicated_issues)
-    original_count = len(all_issues)
-    duplicates_removed = original_count - total_issues
+    summary = {
+        "total_issues": len(deduplicated_issues),
+        "original_issues": len(all_issues),
+        "deduplication_savings": len(all_issues) - len(deduplicated_issues),
+        "by_severity": severity_counts,
+        "agents_run": list(agent_results.keys()),
+        "agent_count": len(agent_results)
+    }
     
     return {
-        "all_issues": all_issues,
         "deduplicated_issues": deduplicated_issues,
-        "final_score": weighted_score,
+        "final_score": total_score,
         "verdict": verdict,
-        "summary": {
-            "total_issues": total_issues,
-            "original_count": original_count,
-            "duplicates_removed": duplicates_removed,
-            "severity_counts": severity_counts,
-        }
+        "summary": summary
     }
