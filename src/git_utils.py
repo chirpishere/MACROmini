@@ -167,19 +167,6 @@ class GitRepository:
                     print(f"DEBUG: GitCommandError: {e}")
                 raise
     
-    def get_unstaged_changes(self, include_context: bool = True) -> List[FileChange]:
-        """
-        Get files with unstaged changes (not yet git add)
-        
-        Args:
-            include_context: Whether to include surrounding code context
-            
-        Returns:
-            List of FileChange objects for unstaged files
-        """
-        diff_index = self.repo.index.diff(None, create_patch=True, R=True)
-        return self._process_diff(diff_index, include_context)
-    
     def _process_diff(self, diff_index, include_context: bool, staged_files: List[str] = None) -> List[FileChange]:
         """
         Process GitPython diff objects into FileChange objects
@@ -412,36 +399,4 @@ class GitRepository:
         # binary files
         return b'\x00' in data[:8192]
     
-    def is_repo_clean(self) -> bool:
-        """
-        Check if repository has no uncommitted changes
-        
-        Returns:
-            True if clean (no changes), False if there are changes
-        """
-        return not self.repo.is_dirty()
     
-    def get_current_branch(self) -> str:
-        """Get the name of the current branch"""
-        try:
-            return self.repo.active_branch.name
-        except:
-            return "detached HEAD"
-    
-    def stage_file(self, file_path: str) -> bool:
-        """
-        Stage a file for commit
-        
-        Args:
-            file_path: Path to file to stage
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            self.repo.git.add(file_path)
-            return True
-        except Exception as e:
-            if self.debug:
-                print(f"DEBUG: Failed to stage {file_path}: {e}")
-            return False
