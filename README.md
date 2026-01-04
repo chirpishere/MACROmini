@@ -288,7 +288,7 @@ You can also modify the temperature, code context and other scoring/deduplicatin
 
 ## Troubleshooting
 
-### Review takes too long (>2 minutes)
+### Review takes too long (>5 minutes)
 
 **Possible causes:**
 1. **Model not loaded**: First run loads model into memory (~30s)
