@@ -1,232 +1,249 @@
 """
-Base Agent for MACROmini Multi-Agent System
+Base Agent for MACROmini
 
-This module provides the BaseAgent abstract class that all specialist agents
-(Security, Quality, Performance, Testing, Documentation, Style) inherit from.
-
-The BaseAgent implements the Template Method pattern, providing:
-- Common workflow for all agents
-- Automatic retry logic
-- Execution time tracking
-- Error handling
-- Agent attribution
+Abstract base class for all specialist agents (Security, Style, Quality, etc.).
+Provides common functionality for LLM communication, retry logic, and response parsing.
 """
 
-import time
 from abc import ABC, abstractmethod
-from typing import List, Optional
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
-
-from src.llm_client import CodeIssue, ReviewResult
-from src.orchestration.state import ReviewState
-
+from typing import Dict, List, Any
+import time
+import json
+from langchain_core.messages import HumanMessage, SystemMessage
 
 class BaseAgent(ABC):
     """
-    Abstract base class for all code review agents.
+    Abstract base class for all specialist agents.
     
-    Each specialist agent (Security, Quality, etc.) inherits from this class
-    and implements the _create_prompt() method to define their expertise.
+    Each specialist agent (Security, Style, etc.) inherits from this class
+    and only needs to define its specialized system prompt.
     
     The base class handles:
     - LLM communication with retry logic
-    - JSON parsing and validation
-    - Execution time tracking
-    - Error handling and graceful degradation
-    - Agent attribution (marking which agent found each issue)
-    
-    Usage:
-        class SecurityAgent(BaseAgent):
-            def _create_prompt(self) -> ChatPromptTemplate:
-                return ChatPromptTemplate.from_messages([
-                    ("system", "You are a security expert..."),
-                    ("human", "Review this code: {code}")
-                ])
+    - Response parsing and validation
+    - Error handling and timing
+    - State reading/writing
     """
-
-
-    def __init__(self, llm: ChatOllama, agent_name: str = "base"):
+    
+    def __init__(self, name: str, llm):
         """
         Initialize the base agent.
         
         Args:
-            llm: ChatOllama instance for LLM communication
-            agent_name: Name of the agent (e.g., "security", "quality")
+            name: Agent name (e.g., "security", "style")
+            llm: LangChain LLM instance (ChatOllama)
         """
+        self.name = name
         self.llm = llm
-        self.agent_name = agent_name
-        self.prompt = self._create_prompt()
-        self.parser = JsonOutputParser(pydantic_object=ReviewResult)
-
-
-    #public API called by LangGraph
-    def analyze(self, state: ReviewState) -> ReviewState:
+    
+    @abstractmethod
+    def _get_system_prompt(self) -> str:
         """
-        Main entry point for agent analysis.
+        Get the specialized system prompt for this agent.
         
-        This method implements the complete workflow:
-        1. Extract code from state
-        2. Call LLM with retry logic
-        3. Parse and validate results
-        4. Add agent attribution to issues
-        5. Update state with results and metrics
-        6. Return updated state
+        This is the ONLY method that subclasses must implement.
+        Each agent defines what it looks for in code.
+        
+        Returns:
+            System prompt string
+            
+        Example for SecurityAgent:
+            "You are a security expert. Look for SQL injection, XSS, ..."
+        """
+        pass
+    
+    def analyze(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Main entry point: Analyze code and return issues.
+        
+        This method:
+        1. Reads file info from state
+        2. Calls LLM with specialized prompt
+        3. Parses response into structured issues
+        4. Returns updated state with results
         
         Args:
-            state: Current review state with code to analyze
+            state: ReviewState dictionary
             
         Returns:
-            Updated state with agent's findings added
-            
-        Note:
-            This method handles errors gracefully - if analysis fails,
-            it returns an empty issue list rather than crashing.
+            Updated state with:
+            - agent_results[agent_name] = list of issues
+            - agent_execution_times[agent_name] = seconds taken
+            - agent_errors[agent_name] = error message (if failed)
         """
         start_time = time.time()
         
         try:
-            # Step 1: Call LLM with retry logic
-            issues = self._call_llm_with_retry(state)
+            file_path = state.get("file_path", "")
+            code = state.get("code", "")
+            diff = state.get("diff", "")
+            file_type = state.get("file_type", "unknown")
+        
+            issues = self._call_llm_with_retry(
+                file_path=file_path,
+                code=code,
+                diff=diff,
+                file_type=file_type
+            )
             
-            # Step 2: Add agent attribution to each issue
-            for issue in issues:
-                issue.agent = self.agent_name
-            
-            # Step 3: Update state with results
-            self._update_state_with_issues(state, issues)
-            
-            # Step 4: Track execution metrics
             execution_time = time.time() - start_time
-            self._update_state_metadata(state, execution_time, error=None)
             
-            return state
+            return {
+                "agent_results": {self.name: issues},
+                "agent_execution_times": {self.name: execution_time},
+                "agent_errors": {self.name: ""}  # No error
+            }
             
         except Exception as e:
-            # Graceful degradation: log error but don't crash
             execution_time = time.time() - start_time
-            self._update_state_metadata(state, execution_time, error=str(e))
+            error_msg = f"{type(e).__name__}: {str(e)}"
             
-            # Return state with empty issues (other agents continue)
-            self._update_state_with_issues(state, [])
-            return state
+            return {
+                "agent_results": {self.name: []},  # Empty results on error
+                "agent_execution_times": {self.name: execution_time},
+                "agent_errors": {self.name: error_msg}
+            }
         
-    
-    #protected methods, subclasses can overrride these
-    @abstractmethod
-    def _create_prompt(self) -> ChatPromptTemplate:
-        """
-        Create the specialized prompt for this agent.
-        
-        Each agent MUST implement this method to define their expertise.
-        The prompt should instruct the LLM to focus on the agent's domain.
-        
-        Returns:
-            ChatPromptTemplate with system and human messages
-            
-        Example:
-            return ChatPromptTemplate.from_messages([
-                ("system", "You are a {domain} expert..."),
-                ("human", "Review this code:\\n{code}")
-            ])
-        """
-        pass
 
     def _call_llm_with_retry(
-        self, 
-        state: ReviewState, 
-        max_retries: int = 2
-    ) -> List[CodeIssue]:
+        self,
+        file_path: str,
+        code: str,
+        diff: str,
+        file_type: str,
+        max_retries: int = 3
+    ) -> List[Dict[str, Any]]:
         """
-        Call LLM with automatic retry on transient failures.
+        Call LLM with retry logic.
+        
+        Attempts to call the LLM up to max_retries times.
+        If all attempts fail, raises the last exception.
         
         Args:
-            state: Review state containing code to analyze
-            max_retries: Maximum number of retry attempts
+            file_path: Path to file being reviewed
+            code: Source code content
+            diff: Git diff
+            file_type: Type of file (python, javascript, etc.)
+            max_retries: Maximum number of attempts
             
         Returns:
-            List of issues found by the agent
+            List of issue dictionaries
             
         Raises:
-            Exception: If all retries are exhausted
+            Exception: If all retries fail
         """
-        for attempt in range(max_retries + 1):
-            try:
-                return self._call_llm(state)
-            except Exception as e:
-                if attempt == max_retries:
-                    raise
 
-                time.sleep(1)
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                system_prompt = self._get_system_prompt()
+                
+                user_prompt = f"""Review this code change and identify issues.
+
+**File:** {file_path}
+**Type:** {file_type}
+**Code:** {code}
+**Diff (what changed):** {diff}
+
+Return a JSON object with this structure:
+{{
+    "issues": [
+        {{
+            "type": "security|bug|quality|performance|style",
+            "severity": "critical|high|medium|low|info",
+            "line_number": 10,
+            "description": "What's wrong",
+            "suggestion": "How to fix it",
+            "code_snippet": "problematic code"
+        }}
+    ]
+}}
+
+If no issues found, return: {{"issues": []}}
+"""
+                
+                messages = [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt)
+                ]
+                
+                response = self.llm.invoke(messages)
+                
+                issues = self._parse_llm_response(response.content)
+                
+                return issues
+            
+            except Exception as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  #1s, 2s, 4s
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise last_exception
+                
+        raise last_exception        #worst case scenario to avoid crashing
     
-    def _call_llm(self, state: ReviewState) -> List[CodeIssue]:
+    def _parse_llm_response(self, response_text: str) -> List[Dict[str, Any]]:
         """
-        Call the LLM and parse the response.
+        Parse LLM JSON response into structured issues.
+        
+        Handles various response formats:
+        - Pure JSON
+        - JSON wrapped in markdown code blocks
+        - Empty responses
         
         Args:
-            state: Review state containing code to analyze
+            response_text: Raw response from LLM
             
         Returns:
-            List of CodeIssue objects found by the agent
+            List of issue dictionaries
+            
+        Raises:
+            ValueError: If response cannot be parsed
         """
-        #chain
-        chain = self.prompt | self.llm | self.parser
+        if not response_text or not response_text.strip():
+            return []
         
-        result = chain.invoke({
-            "format_instructions": self.parser.get_format_instructions(),
-            "file_path": state.get("file_path", "unknown"),
-            "file_type": state.get("file_type", "unknown"),
-            "code": state.get("code", ""),
-            "diff": state.get("diff", ""),
-        })
+        cleaned = response_text.strip()
         
-        if isinstance(result, dict):
-            review_result = ReviewResult(**result)
-            return review_result.issues
-        else:
-            return result.issues if hasattr(result, 'issues') else []
-    
-    def _update_state_with_issues(
-        self, 
-        state: ReviewState, 
-        issues: List[CodeIssue]
-    ) -> None:
-        """
-        Update state with this agent's findings.
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
         
-        Args:
-            state: Review state to update
-            issues: List of issues found by this agent
-        """
-        # Map agent name to state field
-        issue_field = f"{self.agent_name}_issues"
+        try:
+            data = json.loads(cleaned)
+            
+            issues = data.get("issues", [])
+            
+            validated_issues = []
+            for issue in issues:
+                validated_issue = {
+                    "type": issue.get("type", "quality"),
+                    "severity": issue.get("severity", "info"),
+                    "line_number": issue.get("line_number"),
+                    "description": issue.get("description", "No description provided"),
+                    "suggestion": issue.get("suggestion", "No suggestion provided"),
+                    "code_snippet": issue.get("code_snippet"),
+                    "agent": self.name
+                }
+                validated_issues.append(validated_issue)
+            
+            return validated_issues
+            
+        except json.JSONDecodeError as e:
+            print(f"\n⚠️  [{self.name}] Failed to parse LLM response:")
+            print(f"Response: {response_text[:200]}...")
+            print(f"Error: {e}\n")
+            
+            return []
+        except Exception as e:
+            print(f"\n⚠️  [{self.name}] Unexpected error parsing response:")
+            print(f"Error: {e}\n")
+            return []
         
-        if issue_field not in state:
-            state[issue_field] = []
-        
-        state[issue_field] = issues
-    
-    def _update_state_metadata(
-        self, 
-        state: ReviewState, 
-        execution_time: float, 
-        error: Optional[str]
-    ) -> None:
-        """
-        Update state with agent execution metadata.
-        
-        Args:
-            state: Review state to update
-            execution_time: Time taken by agent in seconds
-            error: Error message if agent failed, None if successful
-        """
-        # Initialize metadata dicts if not present
-        if "agent_execution_times" not in state:
-            state["agent_execution_times"] = {}
-        if "agent_errors" not in state:
-            state["agent_errors"] = {}
-        
-        state["agent_execution_times"][self.agent_name] = round(execution_time, 2)
-        state["agent_errors"][self.agent_name] = error
 
