@@ -1,6 +1,8 @@
 # MACROmini - Multi-Agent Code Review and Orchestration (mini)
 
-A local, privacy-first AI code review system that automatically analyzes Git staged changes using **5 specialized AI agents** running in parallel. Powered by LangGraph, Ollama, and Qwen2.5-Coder.
+![LOGO](images/logo.png)
+
+### A local, privacy-first AI code review system that automatically analyzes Git staged changes using **5 specialized AI agents** running in parallel. Powered by LangGraph, Ollama, and Qwen2.5-Coder.
 
 
 ---
