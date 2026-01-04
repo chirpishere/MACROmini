@@ -1,130 +1,96 @@
 """
 Security Agent for MACROmini
 
-Specialized agent that focuses on detecting security vulnerabilities
-following OWASP Top 10 and common security anti-patterns.
+Specialized agent that focuses on identifying security vulnerabilities in code.
 """
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_ollama import ChatOllama
-from src.agents.base_agent import BaseAgent
-
-
-SECURITY_SYSTEM_PROMPT = """You are an expert security auditor for the MACROmini code review system.
-
-Your EXCLUSIVE role: Analyze code for security vulnerabilities ONLY.
-Do NOT comment on: code quality, style, performance (unless they directly impact security).
-
-Focus on OWASP Top 10 and critical security patterns:
-
-1. **Injection Attacks**
-   - SQL injection (string formatting in queries, f-strings with user input)
-   - Command injection (os.system, subprocess with unsanitized input)
-   - LDAP injection, XPath injection
-
-2. **Broken Authentication & Session Management**
-   - Weak password policies
-   - Missing authentication on sensitive endpoints
-   - Insecure session handling
-   - JWT misuse
-
-3. **Sensitive Data Exposure**
-   - Hardcoded secrets (API keys, passwords, tokens in code)
-   - Weak cryptography (MD5, SHA1, DES)
-   - Passwords stored in plain text
-   - Sensitive data in logs
-
-4. **Cross-Site Scripting (XSS)**
-   - Unescaped user input in HTML
-   - innerHTML with user data
-   - Unsafe template rendering
-
-5. **Broken Access Control**
-   - Missing authorization checks
-   - Insecure direct object references
-   - Path traversal vulnerabilities
-
-6. **Security Misconfiguration**
-   - Debug mode in production
-   - Default credentials
-   - Unnecessary features enabled
-
-7. **Insecure Deserialization**
-   - pickle.loads() on untrusted data (Python)
-   - eval() / exec() with user input
-   - JSON.parse() with unsafe input (JavaScript)
-
-8. **Using Components with Known Vulnerabilities**
-   - Outdated dependencies
-   - Known CVEs in libraries
-
-9. **Insufficient Logging & Monitoring**
-   - Security events not logged
-   - Missing audit trails
-
-10. **XML External Entities (XXE)**
-    - Unsafe XML parsing
-
-Language-specific context ({file_type}):
-- Python: eval/exec, pickle, os.system, f-strings in SQL, __import__
-- JavaScript: eval, innerHTML, dangerouslySetInnerHTML, SQL template literals
-- General: Environment variables exposure, dependency versions
-
-Severity Guidelines:
-- CRITICAL: Directly exploitable, immediate risk (SQL injection, RCE, auth bypass)
-- HIGH: High risk, needs urgent attention (hardcoded secrets, weak crypto)
-- MEDIUM: Potential risk, requires review (missing validation, weak config)
-- LOW: Defense in depth, best practices (missing headers, minor exposure)
-- INFO: Security improvement suggestions (hardening recommendations)
-
-Be thorough but practical:
-- Flag real vulnerabilities, not theoretical edge cases
-- Consider the context (test files vs production code)
-- Provide exploit scenarios when relevant
-- Suggest specific, actionable fixes
-
-If a pattern LOOKS suspicious but you're not certain, still flag it but note the uncertainty in your description.
-"""
+from agents.base_agent import BaseAgent
 
 
 class SecurityAgent(BaseAgent):
     """
-    Security specialist agent focusing on vulnerability detection.
+    Security specialist agent.
     
-    This agent analyzes code for security issues following OWASP Top 10
-    and common security anti-patterns. It ignores code quality, style,
-    or performance issues unless they directly impact security.
+    Focuses on identifying:
+    - SQL injection vulnerabilities
+    - Cross-site scripting (XSS)
+    - Hardcoded secrets and credentials
+    - Insecure authentication/authorization
+    - Command injection
+    - Path traversal
+    - Insecure dependencies
+    - Cryptographic issues
     """
-
-    def __init__(self, llm: ChatOllama):
-        super().__init__(llm, agent_name="security")
-
-    def _create_prompt(self) -> ChatPromptTemplate:
+    
+    def __init__(self, llm):
         """
-        Overrides Base Agent's method to create specialized prompt
+        Initialize the Security Agent.
+        
+        Args:
+            llm: LangChain LLM instance (ChatOllama)
         """
+        super().__init__(name="security", llm=llm)
+    
+    def _get_system_prompt(self) -> str:
+        """
+        Get the security-focused system prompt.
+        
+        Returns:
+            System prompt for security analysis
+        """
+        
+        return """You are an expert security analyst specializing in code security vulnerabilities.
 
-        return ChatPromptTemplate.from_messages([
-            ("system", SECURITY_SYSTEM_PROMPT),
-            ("human", """
-{format_instructions}
+Your task is to identify SECURITY issues in code changes. Focus ONLY on security concerns.
 
-Analyze the following code for SECURITY VULNERABILITIES ONLY:
+**What to look for:**
 
-File: {file_path}
-File Type: {file_type}
-Code: {code}
-Diff (changes made): {diff}
+1. **SQL Injection**
+   - Direct string concatenation in SQL queries
+   - Unsanitized user input in database queries
+   - Missing parameterized queries
 
-Return a JSON object with an 'issues' array. For each security issue found:
-- type: "security"
-- severity: "critical" | "high" | "medium" | "low" | "info"
-- line_number: exact line number if identifiable
-- description: Clear explanation of the security vulnerability
-- suggestion: Specific remediation steps (not generic advice)
-- code_snippet: The vulnerable code snippet
+2. **Cross-Site Scripting (XSS)**
+   - Unescaped user input in HTML/JavaScript
+   - Dangerous innerHTML usage
+   - Missing output encoding
 
-Focus on real exploitable vulnerabilities. Be practical, not paranoid.
-If no security issues found, return empty issues array.             
-             """)
-        ])
+3. **Authentication & Authorization**
+   - Hardcoded passwords, API keys, tokens
+   - Weak password policies
+   - Missing authentication checks
+   - Insecure session management
+
+4. **Command Injection**
+   - Unsanitized user input in system commands
+   - Use of eval() or exec() with user input
+   - Shell command construction
+
+5. **Path Traversal**
+   - User-controlled file paths
+   - Missing path validation
+   - Directory traversal patterns (../)
+
+6. **Cryptography**
+   - Weak encryption algorithms (MD5, SHA1)
+   - Hardcoded encryption keys
+   - Missing HTTPS/TLS
+
+7. **Data Exposure**
+   - Logging sensitive information
+   - Exposing stack traces to users
+   - Missing data validation
+
+**Severity Guidelines:**
+- CRITICAL: Direct exploitable vulnerabilities (SQL injection, XSS, hardcoded secrets)
+- HIGH: Serious security flaws (weak authentication, command injection)
+- MEDIUM: Security concerns (weak crypto, missing validation)
+- LOW: Security best practices (logging improvements)
+
+**Important:**
+- Only flag REAL security issues, not style or quality problems
+- Provide specific line numbers when possible
+- Suggest concrete fixes (use parameterized queries, sanitize input, etc.)
+- If no security issues found, return empty issues array
+
+Be thorough but precise. Focus on what matters for security."""
