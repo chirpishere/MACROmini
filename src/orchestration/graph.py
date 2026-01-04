@@ -1,292 +1,291 @@
 """
-LangGraph Workflow for MACROmini
+LangGraph Orchestration for MACROmini
 
-Orchestrates parallel execution of specialist agents with intelligent routing,
-result aggregation, streaming support, and caching.
+Defines the multi-agent workflow graph:
+1. Router Node - Selects which agents to invoke based on file type
+2. Agent Nodes - Up to 5 specialist agents run in parallel:
+   - Security: Always runs for all files
+   - Quality: Runs for code files
+   - Performance: Runs for code files
+   - Style: Runs for documentation/config/web files
+   - Testing: Runs for test files
+3. Aggregator Node - Combines results and calculates verdict
+
+The graph supports streaming for real-time progress updates.
 """
 
-from typing import Dict, Any, List, Optional, Iterator
+from typing import Dict, Any, Literal
 from langgraph.graph import StateGraph, END
-from langchain_ollama import ChatOllama
-import time
-import hashlib
-import json
-from functools import lru_cache
 
-from src.orchestration.state import ReviewState, create_initial_state
-from src.orchestration.router import detect_file_type, determine_agents_to_invoke
-from src.orchestration.aggregator import aggregate_review_results
-from src.agents.security_agent import SecurityAgent
-from src.agents.quality_agent import QualityAgent
-from src.agents.performance_agent import PerformanceAgent
-from src.agents.testing_agent import TestingAgent
-from src.agents.documentation_agent import DocumentationAgent
-from src.agents.style_agent import StyleAgent
-
-AGENT_TIMEOUT = 30
-CACHE_ENABLED = True
-CACHE_MAX_SIZE = 128
+from orchestration.state import ReviewState
+from orchestration.router import detect_file_type, determine_agents_to_invoke
+from orchestration.aggregator import aggregate_review_results
+from agents.security_agent import SecurityAgent
+from agents.quality_agent import QualityAgent
+from agents.performance_agent import PerformanceAgent
+from agents.style_agent import StyleAgent
+from agents.testing_agent import TestingAgent
 
 
-def _generate_cache_key(file_path: str, code: str, diff: str, agent_name: str) -> str:
+def router_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Generate a unique cache key for agent analysis results.
+    Router node: Determines which agents should analyze the file.
     
-    Cache key is based on: file_path + code + diff + agent_name
-    Uses SHA256 hash for consistent, short keys.
+    Args:
+        state: Current ReviewState
+        
+    Returns:
+        Updated state with agents_to_invoke list
     """
-    content = f"{file_path}||{code}||{diff}||{agent_name}"
-    return hashlib.sha256(content.encode()).hexdigest()
-
-#LRU cache decorator
-@lru_cache(maxsize=CACHE_MAX_SIZE)
-def _get_cached_result(cache_key: str) -> Optional[Dict[str, Any]]:
-    """
-    Retrieve cached agent result.
-    This returns None if not in cache as LRU evicts oldest entries.
-    """
-    # LRU cache handles this automatically
-    return None  # Placeholder, actual caching happens via decorator
-
-def _cache_result(cache_key: str, result: Dict[str, Any]) -> None:
-    """
-    Cache agent result.
-    """
-    # Store in our custom cache decorator
-    _get_cached_result.__wrapped__.__setitem__(cache_key, result)
-
-
-def router_node(state: ReviewState) -> Dict[str, Any]:
-    """
-    Router node that determines which agents should analyze the file.
-    """
-    file_path = state["file_path"]
-    file_type = state.get("file_type", detect_file_type(file_path))
+    file_path = state.get("file_path", "")
     
-    agents_to_invoke = determine_agents_to_invoke(file_path, file_type)
+    file_type = detect_file_type(file_path)
+    
+    agents = determine_agents_to_invoke(file_path, file_type)
     
     return {
         "file_type": file_type,
-        "agents_to_invoke": agents_to_invoke,
+        "agents_to_invoke": agents
     }
 
 
-def create_agent_node(agent, agent_name: str, timeout: int = AGENT_TIMEOUT):
+def create_agent_node(agent_name: str, llm):
     """
-    Factory function to create agent node with timeout and caching.
-    This function erturns a Node function which is langgraph-compatible
+    Factory function to create an agent node.
+    
+    Args:
+        agent_name: Name of the agent ("security", "quality", "performance", "style", "testing")
+        llm: LangChain LLM instance
+        
+    Returns:
+        A function that runs the agent
     """
-    def agent_node(state: ReviewState) -> Dict[str, Any]:
+    if agent_name == "security":
+        agent = SecurityAgent(llm)
+    elif agent_name == "quality":
+        agent = QualityAgent(llm)
+    elif agent_name == "performance":
+        agent = PerformanceAgent(llm)
+    elif agent_name == "style":
+        agent = StyleAgent(llm)
+    elif agent_name == "testing":
+        agent = TestingAgent(llm)
+    else:
+        raise ValueError(f"Unknown agent: {agent_name}")
+    
+    def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Agent node with timeout, caching, and error handling.
+        Agent node: Runs a specific agent's analysis.
+        
+        Args:
+            state: Current ReviewState
+            
+        Returns:
+            Updated state with agent's results
         """
-        if CACHE_ENABLED:
-            cache_key = _generate_cache_key(
-                state["file_path"],
-                state["code"],
-                state.get("diff", ""),
-                agent_name
-            )
-            
-            cached = _get_cached_result(cache_key)
-            if cached is not None:
-                print(f"[CACHE HIT] {agent_name} - using cached result")
-                return cached
-        
-        start_time = time.time()
-        
-        try:
-            result = agent.analyze(state)
-            
-            execution_time = time.time() - start_time
-            
-            if execution_time > timeout:
-                print(f"[WARNING] {agent_name} exceeded timeout ({execution_time:.2f}s > {timeout}s)")
-            
-            if CACHE_ENABLED:
-                _cache_result(cache_key, result)
-            
-            return result
-            
-        except Exception as e:
-            execution_time = time.time() - start_time
-            
-            error_result = {
-                f"{agent_name}_issues": [],
-                "agent_errors": {
-                    agent_name: f"Timeout or error after {execution_time:.2f}s: {str(e)}"
-                }
-            }
-            return error_result
+        return agent.analyze(state)
     
     return agent_node
 
-def aggregator_node(state: ReviewState) -> Dict[str, Any]:
-    """
-    Aggregator node that combines results from all agents.
-    """
 
+def aggregator_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Aggregator node: Combines results from all agents.
+    
+    Args:
+        state: Current ReviewState with all agent results
+        
+    Returns:
+        Updated state with final verdict and score
+    """
     return aggregate_review_results(state)
 
 
-def should_run_agent(agent_name: str):
-    """
-    Create conditional edge function for agent routing.
-    
-    Returns a function that checks if agent should run based on
-    the agents_to_invoke list in state.
-    LangGraph only the state argument.
-    Hence we cannot bake the agent name directly into the check function.
-    """
-    def check(state: ReviewState) -> bool:
-        agents = state.get("agents_to_invoke", [])
-        return agent_name in agents
-    
-    return check
+def should_run_security(state: Dict[str, Any]) -> bool:
+    """Check if security agent should run."""
+    agents = state.get("agents_to_invoke", [])
+    return "security" in agents
 
 
-def create_review_graph(llm: ChatOllama) -> StateGraph:
+def should_run_quality(state: Dict[str, Any]) -> bool:
+    """Check if quality agent should run."""
+    agents = state.get("agents_to_invoke", [])
+    return "quality" in agents
+
+
+def should_run_performance(state: Dict[str, Any]) -> bool:
+    """Check if performance agent should run."""
+    agents = state.get("agents_to_invoke", [])
+    return "performance" in agents
+
+
+def should_run_style(state: Dict[str, Any]) -> bool:
+    """Check if style agent should run."""
+    agents = state.get("agents_to_invoke", [])
+    return "style" in agents
+
+
+def should_run_testing(state: Dict[str, Any]) -> bool:
+    """Check if testing agent should run."""
+    agents = state.get("agents_to_invoke", [])
+    return "testing" in agents
+
+
+def create_review_graph(llm):
     """
-    Create the multi-agent review workflow graph.
+    Create the LangGraph workflow for multi-agent code review.
     
     Graph structure:
-    1. START → router (determine which agents to invoke)
-    2. router → conditional routing to agents (parallel execution)
-    3. All agents → aggregator (combine and deduplicate)
-    4. aggregator → END
+        START
+          ↓
+        [Router] - Detects file type, selects agents
+          ↓
+        ┌──────┬──────┬──────┬──────┬──────┐
+        ↓      ↓      ↓      ↓      ↓      ↓
+    [Security][Quality][Performance][Style][Testing] (parallel, conditionally)
+        ↓      ↓      ↓      ↓      ↓      
+        └──────┴──────┴──────┴──────┴──────┘
+          ↓
+      [Aggregator] - Combines results
+          ↓
+        END
+    
+    Routing Logic:
+    - Test files: security + testing
+    - Docs/config/web files: security + style
+    - Other code files: security + quality + performance
     
     Args:
-        llm: Language model instance for agents
+        llm: LangChain LLM instance (ChatOllama)
         
     Returns:
-        Compiled LangGraph workflow
+        Compiled LangGraph
     """
-
-    #initialize agents
-    security_agent = SecurityAgent(llm)
-    quality_agent = QualityAgent(llm)
-    performance_agent = PerformanceAgent(llm)
-    testing_agent = TestingAgent(llm)
-    documentation_agent = DocumentationAgent(llm)
-    style_agent = StyleAgent(llm)
-    
-    #workflow graph object
+    # Create the graph
     workflow = StateGraph(ReviewState)
     
-    #router node
+    # Add nodes
     workflow.add_node("router", router_node)
-    
-    #agent nodes
-    workflow.add_node("security", create_agent_node(security_agent, "security"))
-    workflow.add_node("quality", create_agent_node(quality_agent, "quality"))
-    workflow.add_node("performance", create_agent_node(performance_agent, "performance"))
-    workflow.add_node("testing", create_agent_node(testing_agent, "testing"))
-    workflow.add_node("documentation", create_agent_node(documentation_agent, "documentation"))
-    workflow.add_node("style", create_agent_node(style_agent, "style"))
-    
-    #aggregator node
+    workflow.add_node("security", create_agent_node("security", llm))
+    workflow.add_node("quality", create_agent_node("quality", llm))
+    workflow.add_node("performance", create_agent_node("performance", llm))
+    workflow.add_node("style", create_agent_node("style", llm))
+    workflow.add_node("testing", create_agent_node("testing", llm))
     workflow.add_node("aggregator", aggregator_node)
     
-    #entry point
+    # Set entry point
     workflow.set_entry_point("router")
     
-    #conditional edges from router to agents
+    # Add conditional edges from router to each agent
     workflow.add_conditional_edges(
         "router",
-        lambda state: state.get("agents_to_invoke", []),
+        should_run_security,
         {
-            #map of agent name: node name
-            "security": "security",
-            "quality": "quality",
-            "performance": "performance",
-            "testing": "testing",
-            "documentation": "documentation",
-            "style": "style",
+            True: "security",
+            False: "aggregator"
         }
     )
     
-    #edges from all agents to aggregator
-    for agent_name in ["security", "quality", "performance", "testing", "documentation", "style"]:
-        workflow.add_edge(agent_name, "aggregator")
-    
-    workflow.add_edge("aggregator", END)
-    
-    return workflow.compile()
-
-#Prefer stream_multi_agent_review, but I have created one just in case
-#This can be used to run CI/CD pipeline code as streaming output isn't necessary
-def run_multi_agent_review(
-    file_path: str,
-    code: str,
-    diff: str,
-    llm: ChatOllama,
-    change_type: str = "modified"
-) -> ReviewState:
-    """
-    Run multi-agent code review on a file.
-    """
-
-    file_type = detect_file_type(file_path)
-    initial_state = create_initial_state(
-        file_path=file_path,
-        file_type=file_type,
-        code=code,
-        diff=diff,
-        change_type=change_type
+    workflow.add_conditional_edges(
+        "router",
+        should_run_quality,
+        {
+            True: "quality",
+            False: "aggregator"
+        }
     )
     
-    # Create and run workflow
-    graph = create_review_graph(llm)
-    final_state = graph.invoke(initial_state)
+    workflow.add_conditional_edges(
+        "router",
+        should_run_performance,
+        {
+            True: "performance",
+            False: "aggregator"
+        }
+    )
     
-    return final_state
+    workflow.add_conditional_edges(
+        "router",
+        should_run_style,
+        {
+            True: "style",
+            False: "aggregator"
+        }
+    )
+    
+    workflow.add_conditional_edges(
+        "router",
+        should_run_testing,
+        {
+            True: "testing",
+            False: "aggregator"
+        }
+    )
+    
+    # Add edges from all agents to aggregator
+    workflow.add_edge("security", "aggregator")
+    workflow.add_edge("quality", "aggregator")
+    workflow.add_edge("performance", "aggregator")
+    workflow.add_edge("style", "aggregator")
+    workflow.add_edge("testing", "aggregator")
+    
+    # Add edge from aggregator to END
+    workflow.add_edge("aggregator", END)
+    
+    # Compile the graph
+    return workflow.compile()
 
 
 def stream_multi_agent_review(
     file_path: str,
     code: str,
     diff: str,
-    llm: ChatOllama,
-    change_type: str = "modified"
-) -> Iterator[Dict[str, Any]]:
+    llm,
+    change_type: str = "MODIFIED"
+):
     """
-    Stream multi-agent code review results as agents complete.
+    Run multi-agent review with streaming updates.
     
-    Yields state updates as each agent finishes, allowing for
-    progressive display of results.
+    This is the main entry point for running a code review.
+    It streams updates as each node completes, allowing real-time
+    progress display.
+    
+    Args:
+        file_path: Path to file being reviewed
+        code: Source code content
+        diff: Git diff
+        llm: LangChain LLM instance
+        change_type: Type of change (ADDED, MODIFIED, DELETED)
+        
+    Yields:
+        Dict updates as each node completes
+        
+    Example:
+        >>> for update in stream_multi_agent_review("test.py", code, diff, llm):
+        ...     print(f"Node completed: {list(update.keys())[0]}")
+        Node completed: router
+        Node completed: security
+        Node completed: quality
+        Node completed: performance
+        Node completed: aggregator
     """
-    # Create initial state
-    file_type = detect_file_type(file_path)
-    initial_state = create_initial_state(
-        file_path=file_path,
-        file_type=file_type,
-        code=code,
-        diff=diff,
-        change_type=change_type
-    )
-    
-    # Create workflow
     graph = create_review_graph(llm)
     
-    # Stream results
-    for output in graph.stream(initial_state):
-        yield output
-
-
-def clear_cache():
-    """
-    Clear the agent result cache.
-    Useful for testing or while forcing re-analysis.
-    """
-    _get_cached_result.cache_clear()
-    print(f"[CACHE] Cleared {CACHE_MAX_SIZE}-entry LRU cache")
-
-
-def get_cache_info():
-    """
-    Get cache statistics.
+    initial_state = {
+        "file_path": file_path,
+        "code": code,
+        "diff": diff,
+        "file_type": "unknown",
+        "change_type": change_type,
+        "agents_to_invoke": [],
+        "agent_results": {},
+        "deduplicated_issues": [],
+        "final_score": 0,
+        "verdict": "unknown",
+        "agent_execution_times": {},
+        "agent_errors": {},
+        "summary": {}
+    }
     
-    Returns:
-        CacheInfo(hits, misses, maxsize, currsize)
-    """
-    return _get_cached_result.cache_info()
+    for update in graph.stream(initial_state):
+        yield update
