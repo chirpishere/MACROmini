@@ -1,5 +1,9 @@
 # MACROmini - Multi-Agent Code Review and Orchestration (mini)
 
+[![PyPI version](https://badge.fury.io/py/macromini.svg)](https://badge.fury.io/py/macromini)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 ![LOGO](images/logo.png)
 
 ### A local, privacy-first AI code review system that automatically analyzes Git staged changes using **5 specialized AI agents** running in parallel. 
@@ -47,6 +51,7 @@ MACROmini uses **5 specialized AI agents** that work in parallel to analyze your
 - **Smart Routing**: Only relevant agents analyze each file type
 - **Parallel Execution**: All agents run simultaneously (3-4x faster)
 - **Intelligent Deduplication**: Merges overlapping issues from multiple agents
+- **Regex-based Guardrails**: Blocks Prompt injection attacks by sanitizing the code
 - **Git Integration**: Blocks commits with critical issues via pre-commit hook
 - **100% Local**: All analysis runs on your machine - no data leaves your system
 
