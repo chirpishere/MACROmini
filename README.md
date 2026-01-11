@@ -2,7 +2,9 @@
 
 ![LOGO](images/logo.png)
 
-### A local, privacy-first AI code review system that automatically analyzes Git staged changes using **5 specialized AI agents** running in parallel. Powered by LangGraph, Ollama, and Qwen2.5-Coder.
+### A local, privacy-first AI code review system that automatically analyzes Git staged changes using **5 specialized AI agents** running in parallel. 
+
+Powered by LangGraph, Ollama, and Qwen2.5-Coder.
 
 
 ---
@@ -91,22 +93,38 @@ MACROmini uses **5 specialized AI agents** that work in parallel to analyze your
     └───┬───┘  └────┬────┘  └─────┬─────┘  └───┬───┘  └───┬────┘
         │           │             │            │          │
         └───────────┴─────────────┴────────────┴──────────┘
-                              ↓
-                    ┌──────────────────┐
-                    │   Aggregator     │
-                    │ (Deduplication & │
-                    │   Scoring)       │
-                    └────────┬─────────┘
-                             ↓
-                    ┌──────────────────┐
-                    │  Final Results   │
-                    │  with Verdict    │
-                    └──────────────────┘
+                                  ↓
+                        ┌─────────┴────────┐
+                        │   Aggregator     │
+                        │ (Deduplication & │
+                        │   Scoring)       │
+                        └─────────┬────────┘
+                                  ↓
+                        ┌─────────┴────────┐
+                        │  Final Results   │
+                        │  with Verdict    │
+                        └──────────────────┘
 ```
 
 ---
 
 ## Quick Start
+
+### Installation
+
+#### Option 1: From PyPI (Recommended)
+
+```bash
+pip install macromini
+```
+
+#### Option 2: From Source (For Development)
+
+```bash
+git clone https://github.com/chirpishere/macromini.git
+cd macromini
+pip install -e .
+```
 
 ### Prerequisites
 
@@ -189,28 +207,39 @@ git commit -m "Add test function"
 ## Project Structure
 
 ```
-macromini/
-├── src/
+MACROmini/
+├── macromini/
 │   ├── __init__.py
+│   ├── __main__.py                 # Entry point for macromini
+│   ├── cli.py                      # Command Line Interface for macromini
 │   ├── reviewer.py                 # Main orchestrator & CLI
 │   ├── git_utils.py                # Git operations and diff parsing
 │   ├── agents/
+│   │   ├── __init__.py
 │   │   ├── base_agent.py           # Abstract agent with LLM logic
 │   │   ├── security_agent.py       # Security vulnerability detection
 │   │   ├── quality_agent.py        # Code quality analysis
 │   │   ├── performance_agent.py    # Performance optimization
 │   │   ├── style_agent.py          # Documentation/config style
 │   │   └── testing_agent.py        # Test coverage & quality
-│   └── orchestration/
-│       ├── state.py                # ReviewState TypedDict
-│       ├── router.py               # Smart agent selection
-│       ├── graph.py                # LangGraph workflow
-│       └── aggregator.py           # Result merging & deduplication
+│   ├── orchestration/
+│   │   ├── __init__.py
+│   │   ├── state.py                # ReviewState TypedDict
+│   │   ├── router.py               # Smart agent selection
+│   │   ├── graph.py                # LangGraph workflow
+│   │   └── aggregator.py           # Result merging & deduplication
+│   ├── security/
+│   │   ├── __init__.py
+│   │   ├── input_sanitizer.py      # Guardrails to sanitize prompt injections
 ├── hooks/
 │   └── pre-commit                  # Git hook template
 ├── testfiles/                      # Test files (not tracked)
 ├── requirements.txt                # Python dependencies
+├── .gitignore                      # Files to ignore
 ├── install-hooks.sh                # Hook installation script
+├── pyproject.toml                  # Configures the build system
+├── MANIFEST.in                     # Includes non-Python files
+├── LICENSE                         # MIT License
 └── README.md                       # This file
 ```
 
@@ -253,6 +282,32 @@ git commit -m "Add authentication (fixed SQL injection)"
 # ✅ Code review passed! Proceeding with commit.
 ```
 
+### Using Different Models
+
+```bash
+# Use a different Ollama model (default: qwen2.5-coder:7b)
+macromini --model deepseek-coder:6.7b
+
+# Use a larger model for more thorough reviews
+macromini --model codellama:34b
+
+# Use a faster, smaller model
+macromini --model qwen2.5-coder:1.5b
+```
+
+### Disabling Security Guardrails
+
+```bash
+# Disable prompt injection detection (not recommended)
+macromini --no-guardrails
+
+# Combine with custom model
+macromini --model deepseek-coder:6.7b --no-guardrails
+
+# Specify repository path and disable guardrails
+macromini --repo-path /path/to/repo --no-guardrails
+```
+
 ### Bypass Hook (Emergency Only)
 
 ```bash
@@ -264,6 +319,49 @@ git commit -n -m "Emergency hotfix"
 ```
 
 **⚠️ Use bypass sparingly** - only for emergencies, WIP commits, or when you're confident the code is safe.
+
+---
+
+### Using as a Python Library
+
+```python
+from macromini import CodeReviewer
+
+# Initialize reviewer
+reviewer = CodeReviewer(
+    repo_path=".",
+    model="qwen2.5-coder:7b"
+)
+
+# Run review and get result
+passed = reviewer.run()
+
+if passed:
+    print("✅ Code review passed!")
+else:
+    print("❌ Code review failed - fix issues before committing")
+```
+
+### Command-Line Options
+
+After installation via pip, use the `macromini` command:
+
+```bash
+# Basic usage (reviews current directory)
+macromini
+
+# Specify repository path
+macromini --repo-path /path/to/your/repo
+
+# Use different model
+macromini --model gpt-4o-mini
+
+# Show version
+macromini --version
+
+# Show help
+macromini --help
+```
 
 ---
 
