@@ -3,7 +3,7 @@ LangGraph Orchestration for MACROmini
 
 Defines the multi-agent workflow graph:
 1. Router Node - Selects which agents to invoke based on file type
-2. Agent Nodes - Up to 5 specialist agents run in parallel:
+2. Agent Nodes - Up to 5 specialist agents run in parallel (ASYNC):
    - Security: Always runs for all files
    - Quality: Runs for code files
    - Performance: Runs for code files
@@ -11,20 +11,20 @@ Defines the multi-agent workflow graph:
    - Testing: Runs for test files
 3. Aggregator Node - Combines results and calculates verdict
 
-The graph supports streaming for real-time progress updates.
+The graph supports async streaming for true parallel execution.
 """
 
 from typing import Dict, Any, Literal
 from langgraph.graph import StateGraph, END
 
-from orchestration.state import ReviewState
-from orchestration.router import detect_file_type, determine_agents_to_invoke
-from orchestration.aggregator import aggregate_review_results
-from agents.security_agent import SecurityAgent
-from agents.quality_agent import QualityAgent
-from agents.performance_agent import PerformanceAgent
-from agents.style_agent import StyleAgent
-from agents.testing_agent import TestingAgent
+from macromini.orchestration.state import ReviewState
+from macromini.orchestration.router import detect_file_type, determine_agents_to_invoke
+from macromini.orchestration.aggregator import aggregate_review_results
+from macromini.agents.security_agent import SecurityAgent
+from macromini.agents.quality_agent import QualityAgent
+from macromini.agents.performance_agent import PerformanceAgent
+from macromini.agents.style_agent import StyleAgent
+from macromini.agents.testing_agent import TestingAgent
 
 
 def router_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -51,14 +51,14 @@ def router_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def create_agent_node(agent_name: str, llm):
     """
-    Factory function to create an agent node.
+    Factory function to create an async agent node.
     
     Args:
         agent_name: Name of the agent ("security", "quality", "performance", "style", "testing")
         llm: LangChain LLM instance
         
     Returns:
-        A function that runs the agent
+        An async function that runs the agent
     """
     if agent_name == "security":
         agent = SecurityAgent(llm)
@@ -73,9 +73,9 @@ def create_agent_node(agent_name: str, llm):
     else:
         raise ValueError(f"Unknown agent: {agent_name}")
     
-    def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    async def agent_node(state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Agent node: Runs a specific agent's analysis.
+        Agent node: Runs a specific agent's analysis (ASYNC).
         
         Args:
             state: Current ReviewState
@@ -83,7 +83,7 @@ def create_agent_node(agent_name: str, llm):
         Returns:
             Updated state with agent's results
         """
-        return agent.analyze(state)
+        return await agent.analyze(state)
     
     return agent_node
 
@@ -236,7 +236,7 @@ def create_review_graph(llm):
     return workflow.compile()
 
 
-def stream_multi_agent_review(
+async def stream_multi_agent_review(
     file_path: str,
     code: str,
     diff: str,
@@ -244,11 +244,11 @@ def stream_multi_agent_review(
     change_type: str = "MODIFIED"
 ):
     """
-    Run multi-agent review with streaming updates.
+    Run multi-agent review with async streaming updates (TRUE PARALLEL EXECUTION).
     
     This is the main entry point for running a code review.
-    It streams updates as each node completes, allowing real-time
-    progress display.
+    It streams updates as each node completes, with agents running
+    in parallel asynchronously.
     
     Args:
         file_path: Path to file being reviewed
@@ -261,12 +261,12 @@ def stream_multi_agent_review(
         Dict updates as each node completes
         
     Example:
-        >>> for update in stream_multi_agent_review("test.py", code, diff, llm):
+        >>> async for update in stream_multi_agent_review("test.py", code, diff, llm):
         ...     print(f"Node completed: {list(update.keys())[0]}")
         Node completed: router
-        Node completed: security
-        Node completed: quality
-        Node completed: performance
+        Node completed: security (parallel)
+        Node completed: quality (parallel)
+        Node completed: performance (parallel)
         Node completed: aggregator
     """
     graph = create_review_graph(llm)
@@ -287,5 +287,6 @@ def stream_multi_agent_review(
         "summary": {}
     }
     
-    for update in graph.stream(initial_state):
+    # Use astream for async streaming (enables true parallelism)
+    async for update in graph.astream(initial_state):
         yield update

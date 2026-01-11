@@ -3,12 +3,14 @@ Base Agent for MACROmini
 
 Abstract base class for all specialist agents (Security, Style, Quality, etc.).
 Provides common functionality for LLM communication, retry logic, and response parsing.
+Supports async execution for parallel agent processing.
 """
 
 from abc import ABC, abstractmethod
 from typing import Dict, List, Any
 import time
 import json
+import asyncio
 from langchain_core.messages import HumanMessage, SystemMessage
 
 class BaseAgent(ABC):
@@ -52,13 +54,13 @@ class BaseAgent(ABC):
         """
         pass
     
-    def analyze(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    async def analyze(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Main entry point: Analyze code and return issues.
+        Main entry point: Analyze code and return issues (ASYNC).
         
         This method:
         1. Reads file info from state
-        2. Calls LLM with specialized prompt
+        2. Calls LLM with specialized prompt (async)
         3. Parses response into structured issues
         4. Returns updated state with results
         
@@ -79,7 +81,7 @@ class BaseAgent(ABC):
             diff = state.get("diff", "")
             file_type = state.get("file_type", "unknown")
         
-            issues = self._call_llm_with_retry(
+            issues = await self._call_llm_with_retry(
                 file_path=file_path,
                 code=code,
                 diff=diff,
@@ -105,7 +107,7 @@ class BaseAgent(ABC):
             }
         
 
-    def _call_llm_with_retry(
+    async def _call_llm_with_retry(
         self,
         file_path: str,
         code: str,
@@ -114,7 +116,7 @@ class BaseAgent(ABC):
         max_retries: int = 3
     ) -> List[Dict[str, Any]]:
         """
-        Call LLM with retry logic.
+        Call LLM with retry logic (ASYNC).
         
         Attempts to call the LLM up to max_retries times.
         If all attempts fail, raises the last exception.
@@ -168,7 +170,8 @@ If no issues found, return: {{"issues": []}}
                     HumanMessage(content=user_prompt)
                 ]
                 
-                response = self.llm.invoke(messages)
+                # Use ainvoke for async LLM call
+                response = await self.llm.ainvoke(messages)
                 
                 issues = self._parse_llm_response(response.content)
                 
@@ -178,7 +181,7 @@ If no issues found, return: {{"issues": []}}
                 last_exception = e
                 if attempt < max_retries - 1:
                     wait_time = 2 ** attempt  #1s, 2s, 4s
-                    time.sleep(wait_time)
+                    await asyncio.sleep(wait_time)
                     continue
                 else:
                     raise last_exception

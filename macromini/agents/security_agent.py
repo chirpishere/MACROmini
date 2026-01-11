@@ -4,7 +4,7 @@ Security Agent for MACROmini
 Specialized agent that focuses on identifying security vulnerabilities in code.
 """
 
-from agents.base_agent import BaseAgent
+from macromini.agents.base_agent import BaseAgent
 
 
 class SecurityAgent(BaseAgent):

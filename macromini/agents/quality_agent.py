@@ -4,7 +4,7 @@ Quality Agent for MACROmini
 Specialized agent that focuses on code quality, maintainability, and code smells.
 """
 
-from agents.base_agent import BaseAgent
+from macromini.agents.base_agent import BaseAgent
 
 
 class QualityAgent(BaseAgent):

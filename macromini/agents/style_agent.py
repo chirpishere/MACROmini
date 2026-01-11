@@ -5,7 +5,7 @@ Specialized agent that focuses on documentation quality, configuration standards
 and web content formatting for non-code files.
 """
 
-from agents.base_agent import BaseAgent
+from macromini.agents.base_agent import BaseAgent
 
 
 class StyleAgent(BaseAgent):

@@ -4,7 +4,7 @@ Testing Agent for MACROmini
 Specialized agent that focuses on test quality, coverage, and testing best practices.
 """
 
-from agents.base_agent import BaseAgent
+from macromini.agents.base_agent import BaseAgent
 
 
 class TestingAgent(BaseAgent):

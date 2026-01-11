@@ -4,7 +4,7 @@ Performance Agent for MACROmini
 Specialized agent that focuses on performance optimization and efficiency issues.
 """
 
-from agents.base_agent import BaseAgent
+from macromini.agents.base_agent import BaseAgent
 
 
 class PerformanceAgent(BaseAgent):
