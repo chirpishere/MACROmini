@@ -1,10 +1,13 @@
 """
 Main Code Reviewer for MACROmini
 Combines Git utilities and multi-agent LLM system to review staged code changes.
+Supports async parallel execution of agents.
 """
 
 from typing import List, Dict, Any
 from dataclasses import dataclass
+from pathlib import Path
+import asyncio
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -14,6 +17,7 @@ from langchain_ollama import ChatOllama
 from macromini.git_utils import GitRepository, FileChange, ChangeType
 from macromini.orchestration.graph import stream_multi_agent_review
 from macromini.orchestration.state import ReviewState
+from macromini.security import InputSanitizer
 
 
 @dataclass
@@ -31,39 +35,226 @@ class CodeReviewer:
     Combines Git operations and multi-agent LLM analysis
     """
     
-    def __init__(self, repo_path: str = ".", model: str = "qwen2.5-coder:7b"):
+    def __init__(self, repo_path: str = ".", model: str = "qwen2.5-coder:7b", enable_guardrails: bool = True):
         """
         Initialize the code reviewer
         
         Args:
             repo_path: Path to Git repository (default: current directory)
             model: Ollama model to use (default: qwen2.5-coder:7b)
+            enable_guardrails: Enable security guardrails (default: True)
         """
         self.console = Console()
         self.git_repo = GitRepository(repo_path)
         self.llm = ChatOllama(model=model, temperature=0)
+        self.sanitizer = InputSanitizer()
+        self.security_warnings = []
+        self.enable_guardrails = enable_guardrails
     
-    def review_staged_changes(self) -> List[FileReviewResult]:
+    def _detect_language(self, file_path: str) -> str:
         """
-        Review all staged changes
+        Detect programming language from file extension
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            Language string ('python', 'javascript', 'c', or 'other')
+        """
+        extension = Path(file_path).suffix.lower()
+        
+        language_map = {
+            '.py': 'python',
+            '.js': 'javascript',
+            '.jsx': 'javascript',
+            '.ts': 'javascript',
+            '.tsx': 'javascript',
+            '.c': 'c',
+            '.cpp': 'c',
+            '.cc': 'c',
+            '.cxx': 'c',
+            '.h': 'c',
+            '.hpp': 'c',
+            '.java': 'c',
+            '.cs': 'c',
+            '.go': 'c',
+        }
+        
+        return language_map.get(extension, 'other')
+    
+    def _apply_guardrails(self, file_path: str, code: str, diff: str) -> tuple[str, str]:
+        """
+        Apply security guardrails to code and diff
+        
+        Args:
+            file_path: Path to the file being reviewed
+            code: Full code content
+            diff: Git diff content
+            
+        Returns:
+            Tuple of (sanitized_code, sanitized_diff)
+        """
+        if not self.enable_guardrails:
+            return code, diff
+        
+        language = self._detect_language(file_path)
+        
+        # Detect injections in code first (before sanitizing)
+        code_detections = self.sanitizer.detect_injections(code, language)
+        
+        # Sanitize code using the detections we just found (avoids re-detecting)
+        sanitized_code, _ = self._sanitize_with_detections(code, code_detections, language, 'warn')
+        
+        # Detect and sanitize diff separately
+        sanitized_diff, _ = self.sanitizer.sanitize(diff, language=language, mode='warn')
+        
+        # Filter code detections to medium and high confidence only
+        filtered_detections = [d for d in code_detections if d.confidence in ['medium', 'high']]
+        
+        # Store warnings for display
+        if filtered_detections:
+            self.security_warnings.append({
+                'file_path': file_path,
+                'detections': filtered_detections
+            })
+        
+        return sanitized_code, sanitized_diff
+    
+    def _sanitize_with_detections(self, text: str, detections: List, language: str, mode: str) -> tuple[str, List[str]]:
+        """
+        Sanitize text using pre-computed detections (avoids re-detecting).
+        
+        Args:
+            text: Text to sanitize
+            detections: Pre-computed InjectionDetection objects
+            language: Programming language
+            mode: Sanitization mode ('warn', 'redact', 'remove')
+            
+        Returns:
+            Tuple of (sanitized_text, warnings)
+        """
+        warnings = []
+        
+        high_confidence = [d for d in detections if d.confidence == 'high']
+        medium_confidence = [d for d in detections if d.confidence == 'medium']
+        
+        if not (high_confidence or medium_confidence):
+            return text, warnings
+        
+        lines = text.split('\n')
+        
+        detections_by_line = {}
+        for detection in high_confidence + medium_confidence:
+            if detection.line_number not in detections_by_line:
+                detections_by_line[detection.line_number] = []
+            detections_by_line[detection.line_number].append(detection)
+        
+        for line_num, line_detections in detections_by_line.items():
+            idx = line_num - 1
+            if idx >= len(lines):  # Safety check
+                continue
+                
+            original_line = lines[idx]
+            
+            has_high = any(d.confidence == 'high' for d in line_detections)
+            confidence = 'HIGH' if has_high else 'MEDIUM'
+            
+            patterns = [d.pattern_type for d in line_detections]
+            contexts = [d.context for d in line_detections]
+            
+            warning = (f"Line {line_num} [{confidence} CONFIDENCE]: "
+                      f"Detected {', '.join(set(patterns))} "
+                      f"in {', '.join(set(contexts))}")
+            warnings.append(warning)
+            
+            if mode == "redact":
+                if has_high:
+                    lines[idx] = f"# [REDACTED - INJECTION ATTEMPT] {original_line[:50]}..."
+                else:
+                    lines[idx] = f"# [FLAGGED - REVIEW REQUIRED]\n{original_line}"
+            
+            elif mode == "warn":
+                warning_comment = f"# [SECURITY] Line {line_num}: {', '.join(set(patterns))}"
+                lines[idx] = f"{warning_comment}\n{original_line}"
+            
+            elif mode == "remove":
+                if has_high:
+                    lines[idx] = f"# [REMOVED - HIGH RISK]"
+        
+        sanitized_text = '\n'.join(lines)
+        return sanitized_text, warnings
+    
+    def _display_security_warnings(self):
+        """
+        Display security warnings if any were detected
+        """
+        if not self.security_warnings:
+            return
+        
+        self.console.print("\n[bold red]🔒 SECURITY WARNINGS DETECTED[/bold red]\n")
+        
+        for warning in self.security_warnings:
+            file_path = warning['file_path']
+            detections = warning['detections']
+            
+            self.console.print(f"[bold yellow]⚠️  {file_path}[/bold yellow]")
+            
+            for detection in detections:
+                confidence = detection.confidence.upper()
+                pattern_type = detection.pattern_type
+                snippet = detection.matched_text[:100] + "..." if len(detection.matched_text) > 100 else detection.matched_text
+                
+                if detection.confidence == 'high':
+                    color = 'red'
+                    emoji = '🔴'
+                elif detection.confidence == 'medium':
+                    color = 'yellow'
+                    emoji = '🟡'
+                else:
+                    continue  # Skip low confidence
+                
+                warning_text = f"[{color}]{emoji} {confidence} confidence - {pattern_type}[/{color}]\n"
+                warning_text += f"[dim]Line {detection.line_number} ({detection.context}): {snippet}[/dim]"
+                
+                self.console.print(Panel(
+                    warning_text,
+                    border_style=color,
+                    padding=(0, 2)
+                ))
+            
+            self.console.print()
+        
+        self.console.print(Panel(
+            "[bold red]⚠️  POTENTIAL PROMPT INJECTION DETECTED[/bold red]\n\n"
+            "The code contains patterns that may be prompt injection attempts.\n"
+            "These patterns have been sanitized before analysis.\n\n"
+            "[dim]If these are legitimate code patterns, you can disable guardrails with --no-guardrails[/dim]",
+            border_style="red",
+            padding=(1, 2)
+        ))
+        self.console.print()
+    
+    async def review_staged_changes(self) -> List[FileReviewResult]:
+        """
+        Review all staged changes (ASYNC with parallel agent execution).
         
         Returns:
             List of FileReviewResult for each changed file
         """
-        self.console.print("\n[bold cyan] Analyzing staged changes...[/bold cyan]\n")
+        self.console.print("\n[bold cyan]🚀 Analyzing staged changes...[/bold cyan]\n")
         
         try:
             changes = self.git_repo.get_staged_changes()
         except Exception as e:
-            self.console.print(f"[red] Error getting staged changes: {e}[/red]")
+            self.console.print(f"[red]❌ Error getting staged changes: {e}[/red]")
             return []
         
         if not changes:
-            self.console.print("[yellow]  No staged changes found.[/yellow]")
+            self.console.print("[yellow]⚠️  No staged changes found.[/yellow]")
             self.console.print("[dim]Tip: Use 'git add <file>' to stage changes[/dim]")
             return []
         
-        self.console.print(f"[green]Found {len(changes)} file(s) to review[/green]\n")
+        self.console.print(f"[green]✓ Found {len(changes)} file(s) to review[/green]\n")
         
         # Review each file
         results = []
@@ -101,12 +292,17 @@ class CodeReviewer:
                 
                 diff = change.diff
                 
-                # Review with multi-agent system (streaming)
+                # Apply security guardrails
+                sanitized_code, sanitized_diff = self._apply_guardrails(
+                    change.file_path, code, diff
+                )
+                
+                # Review with multi-agent system (streaming, async, parallel)
                 final_state = None
-                for update in stream_multi_agent_review(
+                async for update in stream_multi_agent_review(
                     file_path=change.file_path,
-                    code=code,
-                    diff=diff,
+                    code=sanitized_code,
+                    diff=sanitized_diff,
                     llm=self.llm,
                     change_type=change.change_type.value
                 ):
@@ -300,9 +496,9 @@ class CodeReviewer:
             ))
             return True
     
-    def run(self) -> bool:
+    async def run(self) -> bool:
         """
-        Run the complete code review workflow
+        Run the complete code review workflow (ASYNC).
         
         Returns:
             True if review passes (no critical issues), False otherwise
@@ -310,8 +506,8 @@ class CodeReviewer:
         # Check Ollama connection
         self.console.print("[cyan]Checking Ollama connection...[/cyan]")
         try:
-            # Test connection by making a simple call
-            self.llm.invoke("test")
+            # Test connection by making a simple call (async)
+            await self.llm.ainvoke("test")
             self.console.print("[green]✓ Connected to Ollama[/green]")
         except Exception as e:
             self.console.print(f"\n[red]Cannot connect to Ollama: {e}[/red]")
@@ -319,7 +515,10 @@ class CodeReviewer:
             self.console.print("[dim]  ollama serve[/dim]\n")
             return False
         
-        results = self.review_staged_changes()
+        # Display security warnings before review
+        self._display_security_warnings()
+        
+        results = await self.review_staged_changes()
         
         if not results:
             return True 
