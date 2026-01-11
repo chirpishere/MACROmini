@@ -339,7 +339,8 @@ reviewer = CodeReviewer(
 )
 
 # Run review and get result
-passed = reviewer.run()
+import asyncio
+passed = asyncio.run(reviewer.run())
 
 if passed:
     print("✅ Code review passed!")
@@ -359,7 +360,7 @@ macromini
 macromini --repo-path /path/to/your/repo
 
 # Use different model
-macromini --model gpt-4o-mini
+macromini --model deepseek-coder:6.7b
 
 # Show version
 macromini --version
